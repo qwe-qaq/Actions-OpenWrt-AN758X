@@ -6,15 +6,8 @@ name: Build PonWrt (Airoha AN758x PON)
 # =========================================================
 env:
   BUILD_ROOT: /workdir
-  # ⚠ 回退值必须与 input 的 default 一致，不能写 'fork'：
-  #   repository_dispatch / API 触发时 github.event.inputs.* 全是空，
-  #   回退成 'fork' 就会走到下面 REPO_URL 的 fork 分支，
-  #   而「无输入触发」和「选默认值触发」应该是同一条路。
   SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
-  # 唯一真相源：固件版本后缀的作者名（LuCI 概览页「固件版本」）
-  # 由 fw_author 输入项覆盖，留空则 qwe
   FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
-  # fork 分支指向 qwe-qaq/ponwrt（不是已 404 的 qwe3017/ponwrt）
   REPO_URL: ${{ github.event.inputs.source == 'fork' && 'https://github.com/qwe-qaq/ponwrt' || 'https://github.com/pbs05/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
@@ -24,34 +17,10 @@ env:
   UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
   USE_DL_CACHE: true
   USE_CCACHE: false
-  # ccache 的上限：源码基座配置里 CONFIG_CCACHE=y，所以它一直在生效
-  # （日志里 CC="ccache aarch64-openwrt-linux-musl-gcc"）。
-  # 不设上限它会一路长，把 actions/cache 的 10GB 配额吃光 ——
-  # 而配额被挤掉的正是工具链缓存。2G 对单套配置足够。
   CCACHE_MAXSIZE: 2G
-
-  # =========================================================
-  # host 侧 go / rust / llvm 怎么来
-  #   prebuilt（默认）用 runner 预装的，省 1.5~2.5 小时，版本随镜像走；
-  #   source 全部源码编，慢但可复现。
-  # ★ 两者产物形态不同（符号链接 vs 真二进制），HOST_MODE 必须进缓存前缀，
-  #   否则切模式会命中对方的产物 → make 认为「已安装」→ 编译期报不相干的错。
-  # =========================================================
   PREBUILT_HOST: ${{ github.event.inputs.prebuilt_host == 'false' && 'false' || 'true' }}
   HOST_MODE: ${{ github.event.inputs.prebuilt_host == 'false' && 'source' || 'prebuilt' }}
-  # 用 runner 预装的 rust stable（0 秒）还是按 feed 里 pin 的版本另装一个
-  # （1~3 分钟）。默认 false：功能等价、省时间；要求产物可复现时改 true。
   RUST_PIN_FEED: false
-
-  # =========================================================
-  # 整体构建缓存 —— 移植自 VIKINGYFY/OpenWRT-CI 的滚动缓存
-  #   一份 = staging_dir/host* + staging_dir/tool* + .ccache
-  #   key = ponwrt-<源站>-<分支>-<SoC>-<HOST_MODE>-<提交号>，回退键为同前缀 + "-"
-  # ★ 前缀永远稳定、只有提交号会变，所以「命中」不取决于两端指纹能否对上。
-  #   两条通道：① actions/cache（快，7 天无访问回收）② Release（慢，永久）；
-  #   恢复 ①→②，保存两条都写（② 失败只 warning）。
-  # ⚠ with.path 不接受 GITHUB_ENV 动态值，必须在这里静态写死。
-  # =========================================================
   CACHE_ROOT: /workdir/openwrt
   CACHE_RELEASE: cache-backup
   RELEASE_BACKUP: ${{ github.event.inputs.release_backup == 'false' && 'false' || 'true' }}
@@ -64,26 +33,12 @@ env:
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
-
-  # =========================================================
-  # 加密加速开关
-  # ⚠ 一律用 github.event.inputs（本文件可被 repository_dispatch 触发，
-  #   那种触发下 inputs 上下文不可靠）。
-  # ⚠ 三个开关统一写 `== '1' && '1' || '0'`，不能用 `|| '0'` 兜：'0' 会被
-  #   转成数字 0 判假；也不能用 `!= '0'` 兜 —— inputs 为 null 时按空串处理，
-  #   '' != '0' 成立，声明的 default 失效、开关被静默打开。
-  # =========================================================
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
-
-  # ---- FTTR 相关仓库 ----
-  # 填 none = 本次不拉这些仓库，FTTR 相关包整体跳过
-  # 两个仓库的可见性不保证一致（当前：luci 公开、后端私有），所以运行时
-  # 逐个匿名探测，只有探测失败的才注入凭证。
   PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
   PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
-  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'qwe-qaq/luci-app-fttr' }}
+  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'LazuliKao/luci-app-fttr' }}
   FTTR_LUCI_BRANCH: ${{ github.event.inputs.fttr_luci_branch || 'main' }}
 
 on:
@@ -129,11 +84,6 @@ on:
           - nokia_xg-040g-mf
           - nokia_xg-040g-mf-ubi
           - all
-
-      # ---------- 加密加速开关 ----------
-      # 用 choice 而不是 boolean：本文件其余开关（scope / ignore_cache /
-      # upload_release / ssh）一律是 choice + 字符串，保持一致；且 boolean
-      # 输入在 API 重跑 / repository_dispatch 时拿不到值，会退化成空串。
       opt_arm64ce:
         description: 'arm64 汇编加密实现（AN7581 走 NEON 位切片 / AN7583 走 CE，按 SoC 自动选）'
         required: false
@@ -186,10 +136,6 @@ on:
           - 'true'
           - 'false'
       prebuilt_host:
-        # 这里刻意保持 true/false 二选一：主流程一次只编一个固件，host 侧只能
-        # 有一种模式，「两个都跑」没有意义（那是 warm-cache 预热时才有的事）。
-        # 对应关系：这里的 true = warm-cache 的「预编译」，false = 「源码编」。
-        # HOST_MODE 会进缓存 key 前缀，两边映射到同一个 ASCII 值即可互通。
         description: 'Go/Rust/LLVM 用 runner 预编译（false = 全部从源码真实编译，首次 +1.5~2.5 小时）'
         required: false
         default: 'true'
@@ -197,7 +143,6 @@ on:
         options:
           - 'true'
           - 'false'
-      # 覆盖口：不填即为 env.FW_AUTHOR 的 "qwe"。保留输入项仅为临时指定其他作者。
       fw_author:
         description: '覆盖固件版本后缀的作者名（LuCI 概览页「固件版本」）。留空 = qwe'
         required: false
@@ -247,11 +192,6 @@ jobs:
     outputs:
       cache_prefix: ${{ steps.cache-key.outputs.prefix }}
       cache_key: ${{ steps.cache-key.outputs.key }}
-
-    # ⚠ secrets 上下文不允许出现在 step 级 if 里（GitHub 的上下文可用性表
-    #   没给 steps.if 这一项，写了会直接报 Unrecognized named-value: 'secrets'）。
-    #   所以在 job 级 env 里把「凭证配了没」算成布尔串，step 里只判断这个标志。
-    #   标志本身是 true/false，不含任何秘密值。
     env:
       HAS_APP_CREDS: ${{ secrets.PRIVATE_SOURCE_APP_ID != '' && secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY != '' }}
       HAS_PAT: ${{ secrets.PRIVATE_REPO_TOKEN != '' || secrets.FTTR_TOKEN != '' }}
@@ -260,15 +200,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # 不持久化凭据：checkout 会把 http.https://github.com/.extraheader
-          # 写进【本地】.git/config，那个头带的是仅本仓库权限的 GITHUB_TOKEN，
-          # 会盖掉凭证步骤注入的 PAT，导致私有仓库 404（本流程无 git push，
-          # 后续只用 gh CLI + env 里的 GITHUB_TOKEN，不需要 git 持久化凭据）
           persist-credentials: false
-
-      # =========================================================
-      # 0. 解析机型 -> 自动校正 SoC，导出 device name
-      # =========================================================
       - name: Resolve device profile
         id: resolve
         run: |
@@ -519,25 +451,6 @@ jobs:
           echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
 
-      # =========================================================
-      # 2.5 私有仓库凭证（openwrt-fttr feed 来源）
-      #   优先级：GitHub App 安装令牌（1 小时、单仓库、只读、自动吊销）
-      #           > Secret 里的 PAT
-      # ⚠ 注入走 GIT_ASKPASS，不要拼 user:token@ 也不要写 url.*.insteadOf：
-      #   后者会落盘到 git config，还会和 checkout 注入的 extraheader 抢优先级
-      #   （本地 .git/config 更高，直接盖掉令牌 → 404 Repository not found）。
-      # ⚠ 不设令牌输入框：workflow_dispatch 的输入会明文出现在 run 页面。
-      # =========================================================
-
-      # ---------------------------------------------------------
-      # 先探测、后取凭证：公开仓库零凭证直接 clone，只有私有仓库才去申请
-      # GitHub App 令牌。好处有三：
-      #   1) 仓库哪天转公开，不用改任何配置自动生效；
-      #   2) 没装 App 的 fork 在「后端仓库是公开」的情况下照样能跑；
-      #   3) 令牌只在真正需要时才存在，暴露面最小。
-      # 探测必须真匿名：此时 GIT_ASKPASS 尚未设置，且 checkout 已用
-      # persist-credentials: false，git 里没有本仓库的 GITHUB_TOKEN 头。
-      # ---------------------------------------------------------
       - name: Probe FTTR repos visibility
         id: probe
         if: ${{ env.PRIVATE_REPO != 'none' && (env.PROFILE == 'h3c_hm2004-du' || github.event.inputs.profile == 'h3c_hm2004-du') }}
@@ -590,20 +503,9 @@ jobs:
             echo "::error::仓库需要凭证但两种凭证都没配 —— 后面的 Setup 步骤会失败退出"
           fi
 
-      # 只在探测到「确实有私有仓库」时才申请令牌：PRIVATE_REPO=none、
-      # 非 HM2004-DU 机型、或仓库已转公开，都直接跳过，免得没装 App 的
-      # fork 一上来就红。
       - name: Create private source token
         id: private-source-token
-        # 少了 HAS_APP_CREDS 这个门，Secrets 没配时 action 会直接抛
-        # "Input required and not supplied: app-id" 炸掉整个 job。
-        # 加上之后：没配 App 就跳过，由后面的 Setup 步骤回退到 PAT。
         if: ${{ steps.probe.outputs.need_token == 'true' && env.HAS_APP_CREDS == 'true' }}
-        # ⚠ 关键：拿不到令牌不能炸掉整个 job。
-        #   典型场景——仓库私有但 App 没装到它（或 repositories 里混进了
-        #   公开但未安装的仓库）→ action 报 422，重试 4 次后失败。
-        #   设了 continue-on-error 之后，Setup 步骤会看到空的 APP_TOKEN
-        #   并自动回退到 PAT，构建不至于卡死在编译前。
         continue-on-error: true
         uses: actions/create-github-app-token@v3
         with:
@@ -613,7 +515,6 @@ jobs:
           private-key: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-contents: read
-          # 只列探测判定为私有的仓库（逗号分隔），公开仓库不进白名单
           repositories: ${{ steps.probe.outputs.token_repos }}
 
       - name: Prepare private Git authentication
