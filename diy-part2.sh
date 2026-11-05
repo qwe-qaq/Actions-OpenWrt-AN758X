@@ -204,22 +204,22 @@ fi
 
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
 
-VER_CODE="$(sed -n 's/^CONFIG_VERSION_CODE="\(.*\)"$/\1/p' .config 2>/dev/null || true)"
-if [ -n "$VER_CODE" ]; then
-  DESC_BODY='%D %V %C'
-else
-  DESC_BODY='%D %V'
-fi
-[ -z "$FW_DESC_SUFFIX" ] && FW_DESC_SUFFIX="· ${FW_AUTHOR} · ${FW_BUILD_TIME}"
-
+FW_MAIN="PonWrt SNAPSHOT mutoli / LuCI Master 26.302.04020"
 RELEASE_TPL="package/base-files/files/etc/openwrt_release"
 OSREL_TPL="package/base-files/files/usr/lib/os-release"
 
-# 用 perl + 环境变量传替换文本：作者名/后缀里带 / | # & 都不会搞坏语法
-# （直接 sed "s|...|${FW_DESC_SUFFIX}|" 遇到这些字符会炸）
-FW_DESC_LINE="DISTRIB_DESCRIPTION='${DESC_BODY} ${FW_DESC_SUFFIX}'"
-OSREL_LINE="OPENWRT_RELEASE=\"${DESC_BODY} ${FW_DESC_SUFFIX}\""
+# 两处版本信息固定为主串，再保留编译时间
+FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN} · ${FW_BUILD_TIME}'"
+OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN} · ${FW_BUILD_TIME}\""
 export FW_DESC_LINE OSREL_LINE
+
+# 国内常用 apk 软件包源（TUNA ImmortalWrt）
+mkdir -p files/etc/apk
+cat > files/etc/apk/repositories <<'EOF'
+https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
+https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53
+EOF
+echo "✅ apk 软件包源 -> TUNA snapshots (targets + packages)"
 
 if [ -f "$RELEASE_TPL" ]; then
   # 只替换 DISTRIB_DESCRIPTION 行，不动 DISTRIB_ID / DISTRIB_RELEASE 等其它行
