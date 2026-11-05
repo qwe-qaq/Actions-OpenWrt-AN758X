@@ -11,6 +11,13 @@ echo "拉取可选插件 (diy-part1.sh)"
 echo "=========================================="
 PKG_DIR="package/custom"
 mkdir -p "$PKG_DIR"
+
+# SSR Plus+：加入 helloworld feed，并安装其索引到 LuCI
+grep -q '^src-git helloworld' feeds.conf.default || \
+  echo 'src-git helloworld https://github.com/fw876/helloworld.git' >> feeds.conf.default
+./scripts/feeds update helloworld
+./scripts/feeds install -a -p helloworld
+
 # ---------------------------------------------------------
 # 插件开关
 # 默认开启：Airoha SoC 状态页（config 里已 =y，必须拉否则 defconfig 会剔除）
@@ -26,22 +33,22 @@ mkdir -p "$PKG_DIR"
 #   Package，package-metadata 按扫描顺序挑一个，行为不可预期。所以只拷 luci
 #   前端，本体一律用 feeds 的。
 ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Frame Engine/PPE）
-ADD_FLUENT=true        # luci-theme-fluent：Fluent 2 风格主题
-ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
-ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
-ADD_PASSWALL=true      # luci-app-passwall（只用 feeds 的依赖包）
-ADD_OPENCLASH=true     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
-ADD_MOSDNS=true        # luci-app-mosdns（本体只用 feeds 的 mosdns）
-ADD_LUCKY=true         # luci-app-lucky（DDNS + socat）
-ADD_TAILSCALE=true     # luci-app-tailscale（本体只用 feeds 的 tailscale）
-ADD_OPENLIST=true      # luci-app-openlist2（alist/openlist 挂载）
-ADD_SMARTDNS=true      # luci-app-smartdns（本体只用 feeds 的 smartdns）
-ADD_EASYTIER=true      # luci-app-easytier（另需 kmod-tun + easytier 本体，Rust 编译较慢）
-ADD_POWEROFF=true      # luci-app-poweroffdevice（关机）
-ADD_OWQ_WOL=true       # luci-app-owq-wol（网络唤醒，依赖 etherwake）
-ADD_WATCHDOG=true      # luci-app-watchdog（看门狗，包在子目录，需特殊处理）
-ADD_TASKPLAN=true      # luci-app-taskplan（定时任务）
-ADD_OAF=true           # luci-app-oaf（应用过滤，含内核模块，高风险）
+ADD_FLUENT=false       # luci-theme-fluent：纯净版不编
+ADD_FLUENT_LITE=false
+ADD_FLUENT_DASH=false
+ADD_PASSWALL=false     # PassWall：纯净版不编
+ADD_OPENCLASH=false    # OpenClash：纯净版不编
+ADD_MOSDNS=false       # MosDNS：纯净版不编
+ADD_LUCKY=false        # Lucky：纯净版不编
+ADD_TAILSCALE=false    # Tailscale：纯净版不编
+ADD_OPENLIST=false     # Openlist：纯净版不编
+ADD_SMARTDNS=false     # SmartDNS：纯净版不编
+ADD_EASYTIER=false     # EasyTier：纯净版不编
+ADD_POWEROFF=false     # 关机按钮：纯净版不编
+ADD_OWQ_WOL=false      # WOL：纯净版不编
+ADD_WATCHDOG=false     # 看门狗：纯净版不编
+ADD_TASKPLAN=false     # 定时任务：纯净版不编
+ADD_OAF=false          # OAF：纯净版不编
 ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
                         #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
