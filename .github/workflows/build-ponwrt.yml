@@ -784,6 +784,24 @@ jobs:
           echo "WANT_CHACHA=${OPT_CRYPTO_CHACHA}"   >> "$GITHUB_ENV"
           echo "WANT_EIP93=${OPT_CRYPTO_EIP93}"     >> "$GITHUB_ENV"
 
+      - name: Configure
+        run: |
+          cd "$BUILD_ROOT/openwrt"
+          WS="$GITHUB_WORKSPACE"
+          bash "$WS/scripts/patch-luci-version.sh"
+          ./scripts/kconfig.pl + configs/an7581.config "$WS/configs/release.config" > .config
+          bash "$WS/scripts/gen-hg5585f-config.sh"
+          make defconfig
+          sed -i '/^CONFIG_VERSION_CODE=/d' .config 2>/dev/null || true
+          sed -i '/^# CONFIG_VERSION_CODE is not set/d' .config 2>/dev/null || true
+          echo 'CONFIG_VERSION_CODE="mutoli"' >> .config
+          echo "----- target device -----"
+          grep -E 'CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE' .config || true
+          echo "----- plugin symbols -----"
+          grep -E 'ssr-plus|passwall' .config || true
+          echo "----- version -----"
+          grep -E 'CONFIG_VERSION_CODE' .config || true
+
       # =========================================================
       # 9. defconfig + 校验机型
       #    【唯一一次 defconfig】后续不再调用，避免 .config 被重新展开、
