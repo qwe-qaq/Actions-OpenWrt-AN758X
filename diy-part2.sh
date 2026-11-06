@@ -270,32 +270,6 @@ EOF
 chmod +x files/etc/uci-defaults/99-apk-mirror-autodetect
 echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun）"
 
-if [ -f "$RELEASE_TPL" ]; then
-  # 只替换 DISTRIB_DESCRIPTION 行，不动 DISTRIB_ID / DISTRIB_RELEASE 等其它行
-  perl -i -pe 's/^DISTRIB_DESCRIPTION=.*/$ENV{FW_DESC_LINE}/' "$RELEASE_TPL"
-  echo "✅ 固件版本模板 -> $FW_DESC_LINE"
-else
-  echo "::warning::未找到 $RELEASE_TPL，固件版本不会带构建信息"
-fi
-
-# os-release 同步（部分工具/LuCI 版本读它；%B 只是 SOURCE_DATE_EPOCH 时间戳，不好看）
-if [ -f "$OSREL_TPL" ]; then
-  perl -i -pe 's/^OPENWRT_RELEASE=.*/$ENV{OSREL_LINE}/' "$OSREL_TPL"
-  echo "✅ os-release 同步 -> $OSREL_LINE"
-fi
-
-# LuCI 概览页只保留固定主版本：PonWrt SNAPSHOT mutoli / LuCI Master <目标版本号>
-# 实际追加位置在 status/include/10_system.js：description + ' / ' + luciversion
-# 直接改成只显示 boardinfo.release.description，去掉后面的 " / LuCI Master <commit>"
-LUCI_SYS_JS="package/feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
-if [ -f "$LUCI_SYS_JS" ]; then
-  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$LUCI_SYS_JS" || true
-fi
-
-find package/feeds/luci -path "*status/include/10_system.js" -type f 2>/dev/null | while read -r f; do
-  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
-done || true
-
 find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
   rm -f "$f" || true
 done || true# WiFi 温度标签：2.4G / 5G
