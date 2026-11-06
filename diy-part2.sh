@@ -237,12 +237,6 @@ https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/packages/aarch64_cort
 EOF
 echo "✅ apk 软件包源默认 -> TUNA snapshots"
 
-# USB 打印菜单显示名改为“USB 打印”，避免菜单里出现 p910nd 字样
-find package/feeds -path '*p910nd*' -type f \( -name '*.lua' -o -name '*.po' \) 2>/dev/null \
-  | while read -r f; do
-      sed -i 's/p910nd Printer Server/USB打印/g; s/p910nd/USB打印/g; s/Network printer/USB打印/g' "$f" || true
-    done
-
 # 后台菜单不显示“NAS”字样；USB 存储功能仍保留
 grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
   | while read -r f; do
