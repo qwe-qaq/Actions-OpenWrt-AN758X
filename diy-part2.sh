@@ -291,11 +291,12 @@ if [ -f "$OSREL_TPL" ]; then
 fi
 
 # LuCI 概览页只保留固定主版本：PonWrt SNAPSHOT mutoli / LuCI Master <目标版本号>
-# 自动去掉概览页额外追加的 LuCI 提交号后缀，例如 " / LuCI Master 26.309.25350-319f7c9"
-find package/feeds/luci -type f \( -name '*.htm' -o -name '*.js' -o -name '*.lua' \) 2>/dev/null \
-  | while read -r f; do
-      sed -i -E 's# / LuCI Master [0-9]+\.[0-9]+\.[0-9]+-[0-9a-z]+##g; s# / LuCI [A-Za-z]+ [0-9]+\.[0-9]+\.[0-9]+-[0-9a-z]+##g' "$f" || true
-    done || true
+# 实际追加位置在 status/include/10_system.js：description + ' / ' + luciversion
+# 直接改成只显示 boardinfo.release.description，去掉后面的 " / LuCI Master <commit>"
+LUCI_SYS_JS="package/feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
+if [ -f "$LUCI_SYS_JS" ]; then
+  sed -i "s#_\('Firmware Version'\), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || '')#_('Firmware Version'), boardinfo.release.description#" "$LUCI_SYS_JS" || true
+fi
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
