@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 set -euo pipefail
 
 echo "== 隐藏 LuCI 概览页固件版本行 =="
@@ -7,6 +7,7 @@ patch_system_js() {
   local f="$1"
   [ -f "$f" ] || return 0
   perl -0pi -e "s/^\s*_\('"'"'Firmware Version'"'"'\),[^\n]*\n//mg" "$f" || true
+  perl -0pi -e "s/\s*\+\s*'"'"' / '"'"'\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
   perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
 }
 patch_system_js "$LUCI_SYS_JS"
@@ -29,4 +30,3 @@ find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
 done || true
 
 echo "== LuCI 版本补丁完成 =="
-
