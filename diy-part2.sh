@@ -295,8 +295,17 @@ fi
 # 直接改成只显示 boardinfo.release.description，去掉后面的 " / LuCI Master <commit>"
 LUCI_SYS_JS="package/feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
 if [ -f "$LUCI_SYS_JS" ]; then
-  sed -i "s#_\('Firmware Version'\), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || '')#_('Firmware Version'), boardinfo.release.description#" "$LUCI_SYS_JS" || true
+  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$LUCI_SYS_JS" || true
 fi
+
+find package/feeds/luci -path "*status/include/10_system.js" -type f 2>/dev/null | while read -r f; do
+  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
+done || true
+
+find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
+  rm -f "$f" || true
+done || true
+
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
