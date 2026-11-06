@@ -247,7 +247,7 @@ find package/feeds -path '*p910nd*' -type f \( -name '*.lua' -o -name '*.po' \) 
 grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
   | while read -r f; do
       sed -i "s/_('NAS')/_(' ')/g; s/'NAS'/' '/g" "$f" || true
-    done
+    done || true
 
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/99-apk-mirror-autodetect <<'EOF'
