@@ -1,9 +1,5 @@
 name: Build PonWrt (Airoha AN758x PON)
 
-# =========================================================
-# 固件版本后缀（显示在 LuCI 概览页「固件版本」后面）
-#   FW_AUTHOR 是唯一真相源，改动请只改 env.FW_AUTHOR 这一处。
-# =========================================================
 env:
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
