@@ -160,6 +160,22 @@ for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wif
 	changed=1
 done
 
+# 默认无线名称：2.4G = TP-LINK_6628，5G = TP-LINK_6628_5G
+for iface in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wifi-iface\$/\1/p'); do
+	dev="\$(uci -q get wireless.\$iface.device 2>/dev/null)"
+	band="\$(uci -q get wireless.\$dev.band 2>/dev/null)"
+	hwmode="\$(uci -q get wireless.\$dev.hwmode 2>/dev/null)"
+	is5g=0
+	[ "\$band" = "5g" ] && is5g=1
+	[ -z "\$band" ] && [ "\$hwmode" = "11a" ] && is5g=1
+	if [ "\$is5g" = "1" ]; then
+		uci -q set wireless.\$iface.ssid="TP-LINK_6628_5G"
+	else
+		uci -q set wireless.\$iface.ssid="TP-LINK_6628"
+	fi
+	changed=1
+done
+
 if [ "\$changed" = "1" ]; then
 	uci -q commit wireless
 	# 重载而非重启：避免首启期间无线中断后不可恢复
@@ -208,18 +224,57 @@ FW_MAIN="PonWrt SNAPSHOT mutoli / LuCI Master 26.302.04020"
 RELEASE_TPL="package/base-files/files/etc/openwrt_release"
 OSREL_TPL="package/base-files/files/usr/lib/os-release"
 
-# 两处版本信息固定为主串，再保留编译时间
-FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN} · ${FW_BUILD_TIME}'"
-OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN} · ${FW_BUILD_TIME}\""
+# 两处版本信息固定为主串，不追加编译时间
+FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN}'"
+OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN}\""
 export FW_DESC_LINE OSREL_LINE
 
-# 国内常用 apk 软件包源（TUNA ImmortalWrt）
+# 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择可用镜像
 mkdir -p files/etc/apk
 cat > files/etc/apk/repositories <<'EOF'
 https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
 https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53
 EOF
-echo "✅ apk 软件包源 -> TUNA snapshots (targets + packages)"
+echo "✅ apk 软件包源默认 -> TUNA snapshots"
+
+# USB 打印菜单显示名改为“USB 打印”，避免菜单里出现 p910nd 字样
+find package/feeds -path '*p910nd*' -type f \( -name '*.lua' -o -name '*.po' \) 2>/dev/null \
+  | while read -r f; do
+      sed -i 's/p910nd Printer Server/USB打印/g; s/p910nd/USB打印/g; s/Network printer/USB打印/g' "$f" || true
+    done
+
+# 后台菜单不显示“NAS”字样；USB 存储功能仍保留
+grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
+  | while read -r f; do
+      sed -i "s/_('NAS')/_(' ')/g; s/'NAS'/' '/g" "$f" || true
+    done
+
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/99-apk-mirror-autodetect <<'EOF'
+#!/bin/sh
+# 首启自动选择可用的国内 ImmortalWrt apk 镜像
+REPOS=/etc/apk/repositories
+TARGET_PATH=snapshots/targets/airoha/an7581/packages
+PKG_PATH=snapshots/packages/aarch64_cortex-a53
+MIRRORS="
+https://mirrors.tuna.tsinghua.edu.cn/immortalwrt
+https://mirrors.ustc.edu.cn/immortalwrt
+https://mirrors.aliyun.com/immortalwrt
+"
+for base in $MIRRORS; do
+  if curl -fsS --connect-timeout 3 --max-time 8 "$base/$TARGET_PATH/Packages" >/dev/null 2>&1; then
+    cat > "$REPOS" <<EOF2
+$base/$TARGET_PATH
+$base/$PKG_PATH
+EOF2
+    logger -t apk-mirror "使用软件源: $base"
+    break
+  fi
+done
+exit 0
+EOF
+chmod +x files/etc/uci-defaults/99-apk-mirror-autodetect
+echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun）"
 
 if [ -f "$RELEASE_TPL" ]; then
   # 只替换 DISTRIB_DESCRIPTION 行，不动 DISTRIB_ID / DISTRIB_RELEASE 等其它行
