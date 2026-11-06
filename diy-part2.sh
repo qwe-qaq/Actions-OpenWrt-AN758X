@@ -304,7 +304,14 @@ done || true
 
 find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
   rm -f "$f" || true
+done || true# WiFi 温度标签：2.4G / 5G
+find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
+  perl -0pi -e 's/["'"'"']wifi["'"'"']/"2.4G WiFi"/i' "$f" && break
 done || true
+find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
+  perl -0pi -e 's/["'"'"']wifi["'"'"']/"5G WiFi"/i' "$f" && break
+done || true
+
 
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
