@@ -1,14 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "== 固定 LuCI 概览页版本显示 =="
+echo "== 隐藏 LuCI 概览页固件版本行 =="
 LUCI_SYS_JS="package/feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
-if [ -f "$LUCI_SYS_JS" ]; then
-  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$LUCI_SYS_JS" || true
-fi
+patch_system_js() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  perl -0pi -e "s/^\s*_\('"'"'Firmware Version'"'"'\),[^\n]*\n//mg" "$f" || true
+  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
+}
+patch_system_js "$LUCI_SYS_JS"
 
 find package/feeds/luci -path "*status/include/10_system.js" -type f 2>/dev/null | while read -r f; do
-  perl -0pi -e "s/\s*\+\s*\(luciversion\s*\|\|\s*''\)//g" "$f" || true
+  patch_system_js "$f"
 done || true
 
 echo "== 删除 Argon 主题配置入口 =="
@@ -25,3 +29,4 @@ find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
 done || true
 
 echo "== LuCI 版本补丁完成 =="
+
