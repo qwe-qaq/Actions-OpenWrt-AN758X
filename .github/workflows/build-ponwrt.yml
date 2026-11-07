@@ -797,15 +797,15 @@ jobs:
           fi
           make defconfig
           # 强制确保状态插件 + 全部依赖配置正确（防止被 defconfig 剔除）
-echo "🔒 强制确保状态插件 + 全部依赖配置（defconfig 后）..."
-for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
-  sed -i "/$pkg/d" .config 2>/dev/null || true
-  echo "CONFIG_PACKAGE_$pkg=y" >> .config
-done
-for pkg in firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl jsonfilter rpcd-mod-file; do
-  sed -i "/$pkg/d" .config 2>/dev/null || true
-  echo "CONFIG_PACKAGE_$pkg=y" >> .config
-done
+          echo "🔒 强制确保状态插件 + 全部依赖配置（defconfig 后）..."
+          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
+          sed -i "/$pkg/d" .config 2>/dev/null || true
+          echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
+          for pkg in firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl jsonfilter rpcd-mod-file; do
+          sed -i "/$pkg/d" .config 2>/dev/null || true
+          echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
 
       # =========================================================
       # 9. defconfig + 校验机型
