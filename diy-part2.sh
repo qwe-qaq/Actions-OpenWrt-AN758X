@@ -568,10 +568,14 @@ if [ "$FW_VER" = "fw4" ]; then
   # fw4 nftables 规则
   # 入站：允许 SSR Plus+ 端口接收
   nft add rule inet fw4 input tcp dport "$SSR_PORT" accept comment "SSR Plus+ input" 2>/dev/null || true
-  # 出站：允许 SSR Plus+ 进程向外连接
+  # 出站：允许 SSR Plus+ 进程向外连接（skuid 是 UID，不是 PID）
   SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
   if [ -n "$SSR_PID" ]; then
-    nft add rule inet fw4 output meta skuid "$SSR_PID" accept comment "SSR Plus+ output" 2>/dev/null || true
+    # 获取进程的 UID
+    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
+    if [ -n "$SSR_UID" ]; then
+      nft add rule inet fw4 output meta skuid "$SSR_UID" accept comment "SSR Plus+ output" 2>/dev/null || true
+    fi
   fi
   # 转发：允许代理流量转发
   nft add rule inet fw4 forward meta comment "SSR Plus+ forward" accept 2>/dev/null || true
@@ -758,7 +762,7 @@ uci -q commit dhcp
 log "DHCP 优化配置已提交"
 
 # 重启 dnsmasq 使配置生效
-if command -v /etc/init.d/dnsmasq >/dev/null 2>&1; then
+if [ -x /etc/init.d/dnsmasq ]; then
   /etc/init.d/dnsmasq restart >/dev/null 2>&1
   log "dnsmasq 已重启"
 fi
