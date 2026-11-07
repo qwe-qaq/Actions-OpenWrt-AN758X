@@ -41,7 +41,7 @@ if [ -f "$CFG" ]; then
   sed -i "s/option zonename.*/option zonename 'Asia\/Shanghai'/" "$CFG"
   echo "✅ config_generate 默认时区 -> CST-8 / Asia/Shanghai"
 else
-  echo "::warning::未找到 $CFG，跳过默认值修改"
+  echo "ℹ️ 未找到 $CFG，跳过默认值修改"
 fi
 
 # ---------------------------------------------------------
@@ -99,7 +99,7 @@ if [ -n "$DETECT_SCRIPT" ]; then
   sed -i "s/option channel='36'/option channel='auto'/g" "$DETECT_SCRIPT"
   echo "✅ detect 脚本默认信道 -> auto ($DETECT_SCRIPT)"
 else
-  echo "::warning::未找到无线 detect 脚本，跳过编译期默认值修改（由 uci-defaults 兜底）"
+  echo "ℹ️ 未找到无线 detect 脚本，跳过编译期默认值修改（由 uci-defaults 兜底）"
 fi
 
 # ---- 4b. 运行期：uci-defaults 首启强制刷 ----
@@ -215,7 +215,7 @@ PATCH_CPUUSAGE="$(dirname "$0")/scripts/patch-luci-cpuusage.sh"
 if [ -f "$PATCH_CPUUSAGE" ]; then
   PONWRT_DIR=. bash "$PATCH_CPUUSAGE" || true
 else
-  echo "::warning::未找到 $PATCH_CPUUSAGE，跳过概览页 CPU 使用率行定制"
+  echo "ℹ️ 未找到 $PATCH_CPUUSAGE，跳过概览页 CPU 使用率行定制"
 fi
 
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
