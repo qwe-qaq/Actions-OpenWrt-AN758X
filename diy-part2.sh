@@ -393,20 +393,39 @@ echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
 # ========== IPTV 相关菜单统一移到「网络」菜单下 ==========
 echo "🔍 调整 IPTV 相关菜单位置..."
-# 找到 igmpproxy / rtp2httpd 的菜单 JSON 文件，把 parent 从 "services" 改成 "network"
-# 这样所有 IPTV 相关配置都集中在网络菜单下
-MENU_DIRS="package/feeds/luci/luci-app-igmpproxy package/feeds/luci/luci-app-rtp2httpd"
-for dir in $MENU_DIRS; do
-  if [ -d "$dir" ]; then
-    # 搜索菜单 JSON 文件
-    find "$dir" -name "*.json" -path "*menu*" 2>/dev/null | while read -r f; do
-      # 把 "services" 父菜单改成 "network"
-      sed -i 's/"parent":\s*"services"/"parent": "network"/g' "$f" || true
-      echo "✅ 已调整菜单位置: $f"
-    done || true
+# 通用搜索：在整个 luci feeds 里找 igmpproxy / rtp2httpd 的菜单 JSON 文件
+# 不硬编码路径，避免目录结构不同导致找不到
+# 同时搜索所有可能的菜单文件位置（menu/ 目录、luci/ 目录、根目录）
+
+# 方法一：按包名搜索菜单 JSON 文件
+IPTV_MENU_PACKAGES="igmpproxy rtp2httpd"
+for pkg in $IPTV_MENU_PACKAGES; do
+  # 搜索所有包含该包名的菜单 JSON 文件
+  grep -rl "$pkg" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+    # 只处理菜单相关的 JSON 文件（包含 "parent" 或 "menu" 字段的）
+    if grep -q '"parent"' "$f" 2>/dev/null; then
+      # 记录原来的父菜单
+      old_parent=$(grep -o '"parent":\s*"[^"]*"' "$f" | head -1 | sed 's/.*"parent":\s*"//;s/"//')
+      # 把任意父菜单改成 network
+      sed -i 's/"parent":\s*"[^"]*"/"parent": "network"/g' "$f" || true
+      echo "✅ 已调整 $pkg 菜单: $old_parent -> network ($f)"
+    fi
+  done || true
+done || true
+
+# 方法二：兜底搜索，直接找所有包含 "igmpproxy" 或 "rtp2httpd" 的菜单文件
+grep -rl "igmpproxy\|rtp2httpd" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+  if grep -q '"parent"' "$f" 2>/dev/null; then
+    old_parent=$(grep -o '"parent":\s*"[^"]*"' "$f" | head -1 | sed 's/.*"parent":\s*"//;s/"//')
+    # 只改不是 network 的
+    if [ "$old_parent" != "network" ]; then
+      sed -i 's/"parent":\s*"[^"]*"/"parent": "network"/g' "$f" || true
+      echo "✅ 兜底调整: $old_parent -> network ($f)"
+    fi
   fi
 done || true
-echo "✅ IPTV 相关菜单已移到网络菜单下"
+
+echo "✅ IPTV 相关菜单位置调整完成"
 
 # WiFi 温度标签：2.4G / 5G
 # WiFi 温度标签：区分 2.4G / 5G（按出现顺序：第一个=2.4G，第二个=5G）
