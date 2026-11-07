@@ -301,17 +301,13 @@ EOF
 chmod +x files/etc/uci-defaults/99-apk-mirror-autodetect
 echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun）"
 
-find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
-  rm -f "$f" || true
-done || true
-
 # ========== 隐藏 Argon 主题设置选项菜单（保留主题皮肤本身） ==========
 echo "🔍 隐藏 Argon 主题设置选项菜单..."
 # 1. 只删除 argon-config 设置菜单（不删除主题本身）
 rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
-# 2. 从菜单里禁用 argon-config
+# 2. 从菜单 JSON 里删除 argon-config 条目（同时清理多余逗号，避免 JSON 格式错误）
 grep -rl "argon-config" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
-  sed -i 's/luci-app-argon-config//g' "$f" || true
+  sed -i 's/,\s*"luci-app-argon-config"//g; s/"luci-app-argon-config"\s*,//g; s/"luci-app-argon-config"//g' "$f" || true
 done || true
 # 3. 删除 LuCI 菜单里的 argon-config 菜单项
 grep -rl "argon-config" package/feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while read -r f; do
@@ -329,9 +325,9 @@ done || true
 
 # ========== 全面隐藏固件版本信息（多层面） ==========
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
-# 方式一：新版 JS 组件 - 删除整行
+# 方式一：新版 JS 组件 - 删除整行（只匹配 Firmware Version，不要求同行有其他内容）
 grep -rl "Firmware Version" package/feeds feeds --include="*.js" 2>/dev/null | while read -r f; do
-  sed -i "/Firmware Version.*boardinfo.release/d" "$f" || true
+  sed -i "/Firmware Version/d" "$f" || true
   echo "✅ 已从 $f (JS) 中删除固件版本行"
 done || true
 # 方式二：旧版 Lua 模板 - 删除整行
@@ -352,10 +348,12 @@ grep -rl "OpenWrt" package/feeds/luci --include="*.htm" 2>/dev/null | while read
   sed -i "/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d" "$f" || true
 done || true
 
-# 方式五：清空 LuCI 版本相关变量
+# 方式五：清空 LuCI 版本相关变量（多种格式都兼容）
 echo "🔍 清空 LuCI 版本变量..."
 grep -rl "luciversion" package/feeds/luci --include="*.js" 2>/dev/null | while read -r f; do
-  sed -i "s/luciversion.*||.*/luciversion = ''/g" "$f" || true
+  # 兼容多种写法：var luciversion = xxx; / luciversion = xxx || ''; / luciversion = ''
+  sed -i "s/var luciversion = .*/var luciversion = '';/g" "$f" || true
+  sed -i "s/luciversion = .*||.*/luciversion = '';/g" "$f" || true
 done || true
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
