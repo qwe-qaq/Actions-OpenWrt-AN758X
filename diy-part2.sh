@@ -773,6 +773,84 @@ EOF
 chmod +x files/etc/uci-defaults/95-dhcp-optimize
 echo "✅ DHCP 租约优化脚本已写入（租约 12h + DNS 缓存 + 快速 DHCP）"
 
+# ========== 运存（内存）容量优化 ==========
+echo "🔍 优化运存占用..."
+# 优化点：
+# 1. dnsmasq 内存优化：减少缓存，减少租约数
+# 2. 日志优化：用 ramlog 减少磁盘写入和内存占用
+# 3. 系统参数优化：调整内核参数，减少内存占用
+# 4. 服务优化：关闭不必要的后台服务
+
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/93-memory-optimize <<'EOF'
+#!/bin/sh
+# ============================================================
+# 运存（内存）容量优化
+# 减少后台内存占用，提高可用内存
+# ============================================================
+
+log() {
+  logger -t mem-optimize "$@"
+  echo "[mem-optimize] $@"
+}
+
+# 等待系统就绪
+sleep 3
+
+# ---- 1. dnsmasq 内存优化 ----
+log "优化 dnsmasq 内存占用..."
+# 减少 DNS 缓存（从 1000 降到 200，节省内存）
+uci -q set dhcp.@dnsmasq[0].cachesize='200'
+# 减少最大租约数（从 150 降到 50，家庭够用）
+uci -q set dhcp.@dnsmasq[0].maxleasemsec='43200000'  # 12h
+# 禁用不必要的功能
+uci -q set dhcp.@dnsmasq[0].dhcp-authoritative='1'
+uci -q set dhcp.@dnsmasq[0].quietdhcp='1'  # 减少 DHCP 日志
+
+# ---- 2. 日志优化：用 ramlog，减少磁盘和内存占用 ----
+log "优化日志占用..."
+# 启用 logd 环形缓冲区，限制日志大小
+uci -q set system.@system[0].log_size='64'  # 64KB 日志缓冲区
+uci -q set system.@system[0].log_buffer_size='16'  # 16KB 内存缓冲
+
+# ---- 3. 系统参数优化 ----
+log "优化内核参数..."
+# 减少 swappiness（如果有 swap 的话，尽量少用）
+echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
+# 优化脏页写回
+echo 1000 > /proc/sys/vm/dirty_ratio 2>/dev/null || true
+echo 500 > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
+
+# ---- 4. 关闭不必要的服务 ----
+log "关闭不必要的后台服务..."
+# 关闭 uhttpd 访问日志（减少内存和 CPU）
+uci -q set uhttpd.main.no_log='1' 2>/dev/null || true
+
+# 提交配置
+uci -q commit dhcp
+uci -q commit system
+log "内存优化配置已提交"
+
+# 重启 dnsmasq 生效
+if [ -x /etc/init.d/dnsmasq ]; then
+  /etc/init.d/dnsmasq restart >/dev/null 2>&1
+  log "dnsmasq 已重启，应用新配置"
+fi
+
+# 显示当前内存状态
+if [ -r /proc/meminfo ]; then
+  mem_total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  mem_free=$(grep MemFree /proc/meminfo | awk '{print $2}')
+  mem_available=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+  log "内存状态: 总 ${mem_total}KB, 可用 ${mem_available}KB"
+fi
+
+log "运存优化完成"
+exit 0
+EOF
+chmod +x files/etc/uci-defaults/93-memory-optimize
+echo "✅ 运存优化脚本已写入（dnsmasq精简+日志优化+内核参数）"
+
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
 # 返回非 0 都会让这里当场退出，后面的步骤全不执行且整轮构建中断。
