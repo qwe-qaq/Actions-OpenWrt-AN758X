@@ -303,7 +303,24 @@ echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun�
 
 find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
   rm -f "$f" || true
-done || true # WiFi 温度标签：2.4G / 5G
+done || true
+
+# ========== 彻底隐藏 Argon 主题设置选项 ==========
+echo "🔍 隐藏 Argon 主题设置选项..."
+# 1. 删除 argon-config 整个目录
+rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
+rm -rf package/feeds/luci/luci-theme-argon 2>/dev/null || true
+# 2. 从菜单里禁用 argon-config
+grep -rl "argon" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+  sed -i 's/"argon"//g; s/luci-app-argon-config//g' "$f" || true
+done || true
+# 3. 删除 LuCI 菜单里的 argon 菜单项
+grep -rl "Argon" package/feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while read -r f; do
+  sed -i "/argon-config/d; /Argon 配置/d" "$f" || true
+done || true
+echo "✅ Argon 主题设置选项已隐藏"
+
+# WiFi 温度标签：2.4G / 5G
 find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
   perl -0pi -e 's/["'"'"']wifi["'"'"']/"2.4G WiFi"/i' "$f" && break
 done || true
@@ -311,17 +328,35 @@ find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
   perl -0pi -e 's/["'"'"']wifi["'"'"']/"5G WiFi"/i' "$f" && break
 done || true
 
-# 方式六：LuCI 前端删除「固件版本」整行（多文件类型搜索，确保覆盖所有版本）
+# ========== 全面隐藏固件版本信息（多层面） ==========
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
-# 新版 JS 组件
+# 方式一：新版 JS 组件 - 删除整行
 grep -rl "Firmware Version" package/feeds feeds --include="*.js" 2>/dev/null | while read -r f; do
   sed -i "/Firmware Version.*boardinfo.release/d" "$f" || true
   echo "✅ 已从 $f (JS) 中删除固件版本行"
 done || true
-# 旧版 Lua 模板
+# 方式二：旧版 Lua 模板 - 删除整行
 grep -rl "Firmware Version" package/feeds feeds --include="*.htm" --include="*.lua" 2>/dev/null | while read -r f; do
   sed -i "/Firmware Version/d" "$f" || true
   echo "✅ 已从 $f (模板) 中删除固件版本行"
+done || true
+
+# 方式三：LuCI 页脚版本信息 - 清空
+echo "🔍 隐藏 LuCI 页脚版本信息..."
+grep -rl "Powered by" package/feeds/luci --include="*.htm" --include="*.js" 2>/dev/null | while read -r f; do
+  sed -i "s/Powered by.*LuCI.*//g; s/LuCI Master.*//g" "$f" || true
+  echo "✅ 已从 $f 中清理页脚版本"
+done || true
+
+# 方式四：LuCI 登录页版本信息 - 清空
+grep -rl "OpenWrt" package/feeds/luci --include="*.htm" 2>/dev/null | while read -r f; do
+  sed -i "/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d" "$f" || true
+done || true
+
+# 方式五：清空 LuCI 版本相关变量
+echo "🔍 清空 LuCI 版本变量..."
+grep -rl "luciversion" package/feeds/luci --include="*.js" 2>/dev/null | while read -r f; do
+  sed -i "s/luciversion.*||.*/luciversion = ''/g" "$f" || true
 done || true
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
