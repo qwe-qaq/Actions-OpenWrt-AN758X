@@ -932,20 +932,20 @@ echo "✅ 版本隐藏 uci-defaults 脚本已写入（双重保险）"
 # 加密是可选增强，不该有能力搞挂构建。
 [ -f scripts/diy-part2-crypto.sh ] && . ./scripts/diy-part2-crypto.sh || true
 
-# 6. 强制确保状态插件 + 依赖配置正确（防止被意外剔除）
-echo "🔒 强制确保状态插件 + 依赖配置..."
+# 6. 强制确保状态插件 + 全部依赖配置正确（防止被意外剔除）
+echo "🔒 强制确保状态插件 + 全部依赖配置..."
 if [ -f ".config" ]; then
   # 状态插件本体
   for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
     sed -i "/$pkg/d" .config 2>/dev/null || true
     echo "CONFIG_PACKAGE_$pkg=y" >> .config || true
   done
-  # 状态插件的依赖
+  # 全部依赖包（补齐缺失的依赖）
   for pkg in firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl jsonfilter rpcd-mod-file; do
     sed -i "/$pkg/d" .config 2>/dev/null || true
     echo "CONFIG_PACKAGE_$pkg=y" >> .config || true
   done
-  echo "✅ 状态插件 + 依赖配置已强制确保"
+  echo "✅ 状态插件 + 全部依赖配置已强制确保"
 fi
 
 echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
