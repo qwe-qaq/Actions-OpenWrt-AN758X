@@ -806,7 +806,7 @@ jobs:
             sed -i "/$pkg/d" .config 2>/dev/null || true
             echo "CONFIG_PACKAGE_$pkg=y" >> .config
           done
-                # 强制启用 SSR Plus+
+          # 强制启用 SSR Plus+
           echo "🔒 强制启用 SSR Plus+..."
           sed -i '/luci-app-ssr-plus/d' .config 2>/dev/null || true
           echo "CONFIG_PACKAGE_luci-app-ssr-plus=y" >> .config
@@ -827,6 +827,12 @@ jobs:
           grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
             sed -i '/argon-config/d' "$f" 2>/dev/null || true
           done || true
+          # 强制启用 IPTV 相关包
+          echo "🔒 强制启用 IPTV 相关包..."
+          for pkg in luci-app-iptv luci-i18n-iptv-zh-cn; do
+            sed -i "/$pkg/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
 
       # =========================================================
       # 9. defconfig + 校验机型
