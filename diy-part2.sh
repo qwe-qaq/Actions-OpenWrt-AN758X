@@ -580,10 +580,14 @@ else
   # fw3 iptables 规则
   # 入站：允许 SSR Plus+ 端口接收
   iptables -I INPUT -p tcp --dport "$SSR_PORT" -j ACCEPT -m comment --comment "SSR Plus+ input" 2>/dev/null || true
-  # 出站：允许 SSR Plus+ 进程向外连接
-  SSR_UID=$(ps | grep ssr-redir | grep -v grep | awk '{print $1}' | head -1)
-  if [ -n "$SSR_UID" ]; then
-    iptables -I OUTPUT -m owner --uid-owner "$SSR_UID" -j ACCEPT -m comment --comment "SSR Plus+ output" 2>/dev/null || true
+  # 出站：允许 SSR Plus+ 进程向外连接（用 pidof 更可靠，兼容 busybox）
+  SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
+  if [ -n "$SSR_PID" ]; then
+    # 获取进程的 UID
+    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
+    if [ -n "$SSR_UID" ]; then
+      iptables -I OUTPUT -m owner --uid-owner "$SSR_UID" -j ACCEPT -m comment --comment "SSR Plus+ output" 2>/dev/null || true
+    fi
   fi
   # 转发：允许代理流量转发
   iptables -I FORWARD -p tcp -m comment --comment "SSR Plus+ forward" -j ACCEPT 2>/dev/null || true
@@ -605,12 +609,12 @@ crypto-hw-eip93
 EOF
 echo "✅ EIP93 驱动模块加载配置已写入"
 
-# 2. 首启时检查 EIP93 硬件状态并优化
+# 2. 首启时检查 EIP93 硬件状态并优化（编号 90，最早执行）
 mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/98-eip93-npu-optimize <<'EOF'
+cat > files/etc/uci-defaults/90-eip93-npu-optimize <<'EOF'
 #!/bin/sh
 # ============================================================
-# EIP93 NPU 硬件加密优化脚本
+# EIP93 NPU 硬件加密优化脚本（最早执行，确保内核模块加载）
 # 首启时检测硬件状态，确保驱动正确加载
 # ============================================================
 
@@ -619,21 +623,28 @@ log() {
   echo "[eip93-npu] $@"
 }
 
-# 等待内核模块加载完成
-sleep 2
+# 等待内核模块加载完成（最多等 5 秒）
+i=0
+while [ $i -lt 5 ]; do
+  if [ -d "/sys/class/crypto" ] || lsmod 2>/dev/null | grep -q "crypto"; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
 
-# 检查 EIP93 驱动是否加载
-if lsmod | grep -q "eip93\|crypto_hw"; then
+# 检查 EIP93 驱动是否加载（多种匹配方式，兼容不同内核版本）
+if lsmod 2>/dev/null | grep -q "eip93\|crypto_hw\|crypto-hw"; then
   log "✅ EIP93 硬件加密驱动已加载"
   
   # 检查可用的加密算法
   if [ -d "/sys/class/crypto" ]; then
-    hw_algs=$(ls /sys/class/crypto/ 2>/dev/null | grep -i "aes\|des\|sha" | head -10)
+    hw_algs=$(ls /sys/class/crypto/ 2>/dev/null | grep -i "aes\|des\|sha" | head -5)
     log "硬件加速算法: $hw_algs"
   fi
   
   # 检查 AF_ALG 用户空间接口
-  if [ -d "/proc/crypto" ]; then
+  if [ -r "/proc/crypto" ]; then
     hw_count=$(grep -c "driver" /proc/crypto 2>/dev/null || echo 0)
     log "内核加密算法总数: $hw_count"
   fi
@@ -641,10 +652,10 @@ else
   log "⚠️  EIP93 驱动未加载，尝试手动加载..."
   modprobe crypto-hw-eip93 2>/dev/null || true
   sleep 1
-  if lsmod | grep -q "eip93\|crypto_hw"; then
+  if lsmod 2>/dev/null | grep -q "eip93\|crypto_hw\|crypto-hw"; then
     log "✅ 手动加载 EIP93 成功"
   else
-    log "⚠️  EIP93 驱动加载失败，使用软件加密"
+    log "⚠️  EIP93 驱动加载失败，使用软件加密（可能此硬件不支持）"
   fi
 fi
 
@@ -660,8 +671,8 @@ fi
 log "EIP93 NPU 优化完成"
 exit 0
 EOF
-chmod +x files/etc/uci-defaults/98-eip93-npu-optimize
-echo "✅ EIP93 NPU 优化脚本已写入（首启自动检测）"
+chmod +x files/etc/uci-defaults/90-eip93-npu-optimize
+echo "✅ EIP93 NPU 优化脚本已写入（编号 90，最早执行）"
 
 # ========== DHCP 租约与匹配逻辑优化 ==========
 echo "🔍 优化 DHCP 租约与匹配逻辑..."
@@ -734,9 +745,13 @@ log "  静态绑定数量: $static_count"
 # 启用 router 选项（默认网关）
 # 启用 broadcast 选项
 # 优化 NTP 选项
-uci -q delete dhcp.@dnsmasq[0].dhcp_option 2>/dev/null || true
-uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:router'
-uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:broadcast'
+# 注意：只追加不存在的选项，不删除现有配置，避免覆盖用户自定义
+if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:router"; then
+  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:router'
+fi
+if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:broadcast"; then
+  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:broadcast'
+fi
 
 # 提交配置
 uci -q commit dhcp
