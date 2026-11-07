@@ -305,20 +305,19 @@ find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | wh
   rm -f "$f" || true
 done || true
 
-# ========== 彻底隐藏 Argon 主题设置选项 ==========
-echo "🔍 隐藏 Argon 主题设置选项..."
-# 1. 删除 argon-config 整个目录
+# ========== 隐藏 Argon 主题设置选项菜单（保留主题皮肤本身） ==========
+echo "🔍 隐藏 Argon 主题设置选项菜单..."
+# 1. 只删除 argon-config 设置菜单（不删除主题本身）
 rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
-rm -rf package/feeds/luci/luci-theme-argon 2>/dev/null || true
 # 2. 从菜单里禁用 argon-config
-grep -rl "argon" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
-  sed -i 's/"argon"//g; s/luci-app-argon-config//g' "$f" || true
+grep -rl "argon-config" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+  sed -i 's/luci-app-argon-config//g' "$f" || true
 done || true
-# 3. 删除 LuCI 菜单里的 argon 菜单项
-grep -rl "Argon" package/feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while read -r f; do
+# 3. 删除 LuCI 菜单里的 argon-config 菜单项
+grep -rl "argon-config" package/feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while read -r f; do
   sed -i "/argon-config/d; /Argon 配置/d" "$f" || true
 done || true
-echo "✅ Argon 主题设置选项已隐藏"
+echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
 # WiFi 温度标签：2.4G / 5G
 find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
