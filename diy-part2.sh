@@ -516,6 +516,74 @@ grep -rl "luciversion" package/feeds/luci --include="*.js" 2>/dev/null | while r
   sed -i "s/luciversion = .*||.*/luciversion = '';/g" "$f" || true
 done || true
 
+# ========== SSR Plus+ 防火墙规则支持（fw3 iptables / fw4 nftables 双向） ==========
+echo "🔍 配置 SSR Plus+ 防火墙双向支持..."
+# 检测防火墙版本：fw3 还是 fw4
+if [ -d "package/network/config/firewall4" ]; then
+  FIREWALL_VER="fw4"
+  echo "  检测到 fw4 (nftables) 主防火墙"
+else
+  FIREWALL_VER="fw3"
+  echo "  检测到 fw3 (iptables) 主防火墙"
+fi
+
+# 找到 SSR Plus+ 的所有相关目录
+SSR_PLUS_DIRS=$(find package/feeds -maxdepth 3 -type d \( -name "*ssr-plus*" -o -name "*shadowsocksr*" -o -name "*luci-app-ssr*" \) 2>/dev/null)
+if [ -n "$SSR_PLUS_DIRS" ]; then
+  echo "  找到 SSR Plus+ 目录:"
+  echo "$SSR_PLUS_DIRS" | sed 's/^/    /'
+  
+  for dir in $SSR_PLUS_DIRS; do
+    # 查找 init 脚本 / 防火墙脚本
+    find "$dir" -type f \( -name "*.init" -o -name "*.firewall" -o -name "*.sh" -o -path "*/files/*" \) 2>/dev/null | while read -r f; do
+      # 只处理脚本/配置文件
+      if grep -q "iptables\|nftables\|firewall\|start_service\|service_triggers" "$f" 2>/dev/null; then
+        echo "    处理防火墙脚本: $f"
+        
+        # 检查是否同时支持 fw3 和 fw4
+        has_iptables=$(grep -c "iptables" "$f" 2>/dev/null || echo 0)
+        has_nft=$(grep -c "nft " "$f" 2>/dev/null || echo 0)
+        
+        echo "      iptables 规则数: $has_iptables"
+        echo "      nftables 规则数: $has_nft"
+        
+        # 确保双向：入站（ACCEPT input）+ 出站（ACCEPT output）+ 转发（forward）
+        # 如果缺少对应版本的规则，在文件末尾追加
+        if [ "$has_iptables" -eq 0 ]; then
+          echo "      ⚠️  缺少 iptables 规则，补充 fw3 双向支持"
+          cat >> "$f" << 'EOF'
+
+# SSR Plus+ fw3 (iptables) 双向防火墙规则
+# 入站：允许 SSR Plus+ 端口接收
+iptables -I INPUT -p tcp --dport $(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo 1080) -j ACCEPT 2>/dev/null || true
+# 出站：允许 SSR Plus+ 向外连接
+iptables -I OUTPUT -m owner --uid-owner $(ps | grep ssr-redir | grep -v grep | awk '{print $1}' | head -1) -j ACCEPT 2>/dev/null || true
+# 转发：允许代理流量转发
+iptables -I FORWARD -p tcp -m comment --comment "SSR Plus+" -j ACCEPT 2>/dev/null || true
+EOF
+        fi
+        
+        if [ "$has_nft" -eq 0 ]; then
+          echo "      ⚠️  缺少 nftables 规则，补充 fw4 双向支持"
+          cat >> "$f" << 'EOF'
+
+# SSR Plus+ fw4 (nftables) 双向防火墙规则
+# 入站：允许 SSR Plus+ 端口接收
+nft add rule inet fw4 input tcp dport $(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo 1080) accept 2>/dev/null || true
+# 出站：允许 SSR Plus+ 向外连接
+nft add rule inet fw4 output meta skuid $(pidof ssr-redir 2>/dev/null || echo 0) accept 2>/dev/null || true
+# 转发：允许代理流量转发
+nft add rule inet fw4 forward meta comment "SSR Plus+" accept 2>/dev/null || true
+EOF
+        fi
+      fi
+    done || true
+  done || true
+  echo "✅ SSR Plus+ 双向防火墙支持配置完成"
+else
+  echo "  未找到 SSR Plus+ 相关包，跳过"
+fi
+
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
 # 返回非 0 都会让这里当场退出，后面的步骤全不执行且整轮构建中断。
