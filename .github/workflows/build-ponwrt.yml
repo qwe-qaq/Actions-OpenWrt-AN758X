@@ -834,6 +834,12 @@ jobs:
             sed -i "/$pkg/d" .config 2>/dev/null || true
             echo "CONFIG_PACKAGE_$pkg=y" >> .config
           done
+          
+          # 搜索包含版本信息的文件
+          echo "🔍 搜索包含版本信息的文件..."
+          grep -rl "LuCI Master" feeds/luci --include="*.js" --include="*.htm" 2>/dev/null | head -20
+          echo "---"
+          grep -rl "luciversion" feeds/luci --include="*.js" 2>/dev/null | head -20
 
       # =========================================================
       # 9. defconfig + 校验机型
