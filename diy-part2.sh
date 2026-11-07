@@ -281,8 +281,9 @@ find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
 done || true
 
 # 隐藏概览页「固件版本」整行
-find package/feeds/luci -path "*status/include/10_system.js" -type f 2>/dev/null | while read -r f; do
-  sed -i "/_('Firmware Version')/d" "$f" || true
+echo "🔍 搜索 LuCI 状态页固件版本行文件..."
+grep -rl "Firmware Version" package/feeds feeds --include="*.js" 2>/dev/null | while read -r f; do
+  sed -i "/Firmware Version.*boardinfo.release/d" "$f" || true
   echo "✅ 已从 $f 中删除固件版本行"
 done || true
 
