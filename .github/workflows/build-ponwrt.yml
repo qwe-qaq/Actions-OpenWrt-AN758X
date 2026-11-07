@@ -64,7 +64,7 @@ on:
       profile:
         description: '机型 profile (all=全机型编译)'
         required: true
-        default: 'h3c_hm2004-du'
+        default: 'fiberhome_hg5585f-ct'
         type: choice
         options:
           - fiberhome_hg5585f-cu
@@ -785,8 +785,16 @@ jobs:
           cd "$BUILD_ROOT/openwrt"
           WS="$GITHUB_WORKSPACE"
           bash "$WS/scripts/patch-luci-version.sh"
-          ./scripts/kconfig.pl + configs/an7581.config "$WS/configs/release.config" > .config
-          bash "$WS/scripts/gen-hg5585f-config.sh"
+          # 按 SoC 选择配置文件（不再硬编码 an7581）
+          ./scripts/kconfig.pl + "configs/${SOC}.config" "$WS/configs/release.config" > .config
+          # 按机型选择对应的配置生成脚本
+          if [ -f "$WS/scripts/gen-${PROFILE}.sh" ]; then
+            bash "$WS/scripts/gen-${PROFILE}.sh"
+          elif [ -f "$WS/scripts/gen-hg5585f-config.sh" ] && [[ "$PROFILE" == hg5585f* ]]; then
+            bash "$WS/scripts/gen-hg5585f-config.sh"
+          else
+            echo "ℹ 未找到 ${PROFILE} 对应的配置脚本，跳过"
+          fi
           make defconfig
           sed -i '/^CONFIG_VERSION_CODE=/d' .config 2>/dev/null || true
           sed -i '/^# CONFIG_VERSION_CODE is not set/d' .config 2>/dev/null || true
@@ -1536,7 +1544,7 @@ jobs:
     needs: build
     # 只在构建成功、且确实存过缓存时才轮换
     if: ${{ needs.build.result == 'success' && needs.build.outputs.cache_key != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: ponwrt-cache-rollover-${{ github.ref }}-${{ needs.build.outputs.cache_prefix }}
       cancel-in-progress: false
