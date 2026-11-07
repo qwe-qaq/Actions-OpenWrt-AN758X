@@ -806,6 +806,27 @@ jobs:
             sed -i "/$pkg/d" .config 2>/dev/null || true
             echo "CONFIG_PACKAGE_$pkg=y" >> .config
           done
+                # 强制启用 SSR Plus+
+          echo "🔒 强制启用 SSR Plus+..."
+          sed -i '/luci-app-ssr-plus/d' .config 2>/dev/null || true
+          echo "CONFIG_PACKAGE_luci-app-ssr-plus=y" >> .config
+
+          # 再次隐藏固件版本信息行（defconfig 会重新展开 feeds）
+          echo "🔒 再次隐藏固件版本信息行..."
+          for f in feeds/luci/applications/luci-app-attendedsysupgrade/htdocs/luci-static/resources/view/status/include/11_upgrades.js \
+                   feeds/luci/modules/luci-mod-dashboard/htdocs/luci-static/resources/view/dashboard/include/10_router.js \
+                   feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js; do
+            if [ -f "$f" ]; then
+              sed -i '/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d' "$f" 2>/dev/null || true
+            fi
+          done
+
+          # 再次隐藏 Argon 主题设置菜单
+          echo "🔒 再次隐藏 Argon 主题设置菜单..."
+          rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
+          grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+            sed -i '/argon-config/d' "$f" 2>/dev/null || true
+          done || true
 
       # =========================================================
       # 9. defconfig + 校验机型
