@@ -817,7 +817,7 @@ jobs:
                    feeds/luci/modules/luci-mod-dashboard/htdocs/luci-static/resources/view/dashboard/include/10_router.js \
                    feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js; do
             if [ -f "$f" ]; then
-              sed -i '/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d' "$f" 2>/dev/null || true
+              sed -i '/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d; /LuCI Master/d; /luciversion/d' "$f" 2>/dev/null || true
             fi
           done
 
