@@ -320,11 +320,11 @@ done || true
 echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
 # WiFi 温度标签：2.4G / 5G
+# WiFi 温度标签：区分 2.4G / 5G（按出现顺序：第一个=2.4G，第二个=5G）
+echo "🔍 修改 WiFi 温度标签..."
 find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
-  perl -0pi -e 's/["'"'"']wifi["'"'"']/"2.4G WiFi"/i' "$f" && break
-done || true
-find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
-  perl -0pi -e 's/["'"'"']wifi["'"'"']/"5G WiFi"/i' "$f" && break
+  # 只替换第一个匹配为 2.4G，第二个匹配为 5G（不加 /g，按顺序替换）
+  perl -0pi -e 's/["'"'"']wifi["'"'"']/"2.4G WiFi"/i; s/["'"'"']wifi["'"'"']/"5G WiFi"/i' "$f" && break
 done || true
 
 # ========== 全面隐藏固件版本信息（多层面） ==========
