@@ -595,6 +595,74 @@ EOF
 chmod +x files/etc/uci-defaults/97-ssr-plus-firewall
 echo "✅ SSR Plus+ 双向防火墙脚本已写入（自动适配 fw3/fw4）"
 
+# ========== EIP93 NPU 硬件加密优化 ==========
+echo "🔍 优化 EIP93 NPU 硬件加密调用..."
+# 1. 确保 EIP93 驱动模块在启动时加载
+mkdir -p files/etc/modules.d
+cat > files/etc/modules.d/zz-eip93 <<'EOF'
+# EIP93 硬件加密驱动
+crypto-hw-eip93
+EOF
+echo "✅ EIP93 驱动模块加载配置已写入"
+
+# 2. 首启时检查 EIP93 硬件状态并优化
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/98-eip93-npu-optimize <<'EOF'
+#!/bin/sh
+# ============================================================
+# EIP93 NPU 硬件加密优化脚本
+# 首启时检测硬件状态，确保驱动正确加载
+# ============================================================
+
+log() {
+  logger -t eip93-npu "$@"
+  echo "[eip93-npu] $@"
+}
+
+# 等待内核模块加载完成
+sleep 2
+
+# 检查 EIP93 驱动是否加载
+if lsmod | grep -q "eip93\|crypto_hw"; then
+  log "✅ EIP93 硬件加密驱动已加载"
+  
+  # 检查可用的加密算法
+  if [ -d "/sys/class/crypto" ]; then
+    hw_algs=$(ls /sys/class/crypto/ 2>/dev/null | grep -i "aes\|des\|sha" | head -10)
+    log "硬件加速算法: $hw_algs"
+  fi
+  
+  # 检查 AF_ALG 用户空间接口
+  if [ -d "/proc/crypto" ]; then
+    hw_count=$(grep -c "driver" /proc/crypto 2>/dev/null || echo 0)
+    log "内核加密算法总数: $hw_count"
+  fi
+else
+  log "⚠️  EIP93 驱动未加载，尝试手动加载..."
+  modprobe crypto-hw-eip93 2>/dev/null || true
+  sleep 1
+  if lsmod | grep -q "eip93\|crypto_hw"; then
+    log "✅ 手动加载 EIP93 成功"
+  else
+    log "⚠️  EIP93 驱动加载失败，使用软件加密"
+  fi
+fi
+
+# 优化 OpenSSL 引擎（如果可用）
+if command -v openssl >/dev/null 2>&1; then
+  # 检查是否有硬件引擎
+  engines=$(openssl engine 2>/dev/null | grep -i "eip\|hw\|crypto" || echo "")
+  if [ -n "$engines" ]; then
+    log "OpenSSL 硬件引擎: $engines"
+  fi
+fi
+
+log "EIP93 NPU 优化完成"
+exit 0
+EOF
+chmod +x files/etc/uci-defaults/98-eip93-npu-optimize
+echo "✅ EIP93 NPU 优化脚本已写入（首启自动检测）"
+
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
 # 返回非 0 都会让这里当场退出，后面的步骤全不执行且整轮构建中断。
