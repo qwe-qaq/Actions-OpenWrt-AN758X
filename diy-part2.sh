@@ -381,9 +381,43 @@ echo "✅ 首启自动测速选择最快镜像脚本已写入（TUNA / USTC / Al
 echo "🔍 隐藏 Argon 主题设置选项菜单..."
 # 1. 只删除 argon-config 设置菜单（不删除主题本身）
 rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
-# 2. 从菜单 JSON 里删除 argon-config 条目（同时清理多余逗号，避免 JSON 格式错误）
+# 2. 从菜单 JSON 里删除 argon-config 条目（更精确，避免 JSON 格式错误）
+# 用 python 处理 JSON 更安全，但如果没有 python 就用改进的 sed
 grep -rl "argon-config" package/feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
-  sed -i 's/,\s*"luci-app-argon-config"//g; s/"luci-app-argon-config"\s*,//g; s/"luci-app-argon-config"//g' "$f" || true
+  # 先检查文件是不是有效 JSON（简单检查）
+  if python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
+    # 用 python 精确删除 argon-config 条目
+    python3 -c "
+import json
+with open('$f', 'r') as fp:
+    data = json.load(fp)
+# 递归删除所有包含 argon-config 的条目
+def remove_argon(obj):
+    if isinstance(obj, dict):
+        keys_to_remove = [k for k in obj.keys() if 'argon-config' in str(k)]
+        for k in keys_to_remove:
+            del obj[k]
+        for v in obj.values():
+            remove_argon(v)
+    elif isinstance(obj, list):
+        items_to_remove = [i for i, item in enumerate(obj) if 'argon-config' in str(item)]
+        for i in reversed(items_to_remove):
+            del obj[i]
+        for item in obj:
+            remove_argon(item)
+remove_argon(data)
+with open('$f', 'w') as fp:
+    json.dump(data, fp, indent=2)
+" 2>/dev/null || true
+  else
+    # 没有 python 就用改进的 sed（处理各种情况）
+    # 情况1: "luci-app-argon-config", （后面有逗号）
+    sed -i 's/"luci-app-argon-config",\s*//g' "$f" || true
+    # 情况2: , "luci-app-argon-config" （前面有逗号）
+    sed -i 's/,\s*"luci-app-argon-config"//g' "$f" || true
+    # 情况3: 单独的条目（前后都没有逗号）
+    sed -i 's/"luci-app-argon-config"//g' "$f" || true
+  fi
 done || true
 # 3. 删除 LuCI 菜单里的 argon-config 菜单项
 grep -rl "argon-config" package/feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while read -r f; do
@@ -438,21 +472,35 @@ done || true
 # ========== 全面隐藏固件版本信息（多层面） ==========
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
 # 方式一：新版 JS 组件 - 删除整行（只匹配 Firmware Version，不要求同行有其他内容）
+# 优化：删除整行后，检查前一行末尾有没有多余的逗号，避免数组语法错误
 grep -rl "Firmware Version" package/feeds feeds --include="*.js" 2>/dev/null | while read -r f; do
-  sed -i "/Firmware Version/d" "$f" || true
-  echo "✅ 已从 $f (JS) 中删除固件版本行"
+  # 先找到 Firmware Version 所在的行号
+  line_num=$(grep -n "Firmware Version" "$f" | head -1 | cut -d: -f1)
+  if [ -n "$line_num" ]; then
+    # 删除该行
+    sed -i "${line_num}d" "$f" || true
+    # 检查前一行末尾有没有多余的逗号（数组中间元素删除后，前一行末尾可能有逗号）
+    # 简单处理：不删逗号，因为 JS 允许 trailing comma，而且 LuCI 通常是数组形式
+    echo "✅ 已从 $f (JS) 中删除固件版本行 (第 $line_num 行)"
+  fi
 done || true
 # 方式二：旧版 Lua 模板 - 删除整行
 grep -rl "Firmware Version" package/feeds feeds --include="*.htm" --include="*.lua" 2>/dev/null | while read -r f; do
-  sed -i "/Firmware Version/d" "$f" || true
-  echo "✅ 已从 $f (模板) 中删除固件版本行"
+  line_num=$(grep -n "Firmware Version" "$f" | head -1 | cut -d: -f1)
+  if [ -n "$line_num" ]; then
+    sed -i "${line_num}d" "$f" || true
+    echo "✅ 已从 $f (模板) 中删除固件版本行 (第 $line_num 行)"
+  fi
 done || true
 
-# 方式三：LuCI 页脚版本信息 - 清空
+# 方式三：LuCI 页脚版本信息 - 更精确的清理（避免误删）
 echo "🔍 隐藏 LuCI 页脚版本信息..."
+# 只替换版本号部分，不删除整个句子，避免破坏 HTML 结构
 grep -rl "Powered by" package/feeds/luci --include="*.htm" --include="*.js" 2>/dev/null | while read -r f; do
-  sed -i "s/Powered by.*LuCI.*//g; s/LuCI Master.*//g" "$f" || true
-  echo "✅ 已从 $f 中清理页脚版本"
+  # 只替换 LuCI Master 版本号部分，保留 "Powered by LuCI" 文字
+  sed -i "s/LuCI Master [0-9.-]*/LuCI/g" "$f" || true
+  sed -i "s/OpenWrt SNAPSHOT r[0-9a-f-]*/OpenWrt/g" "$f" || true
+  echo "✅ 已从 $f 中清理页脚版本号"
 done || true
 
 # 方式四：LuCI 登录页版本信息 - 清空
