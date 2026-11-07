@@ -431,7 +431,7 @@ if [ -f ".config" ]; then
   # 先删除所有相关配置行
   sed -i '/luci-app-argon-config/d' .config 2>/dev/null || true
   # 强制写入 is not set
-  echo "# CONFIG_PACKAGE_luci-app-argon-config is not set" >> .config
+  echo "# CONFIG_PACKAGE_luci-app-argon-config is not set" >> .config || true
   echo "✅ .config 已强制禁用 argon-config"
 fi
 
@@ -440,7 +440,7 @@ echo "🔒 强制禁用 passwall/xray-core/sing-box..."
 if [ -f ".config" ]; then
   for pkg in luci-app-passwall xray-core sing-box luci-app-passwall2 luci-i18n-passwall-zh-cn; do
     sed -i "/$pkg/d" .config 2>/dev/null || true
-    echo "# CONFIG_PACKAGE_$pkg is not set" >> .config
+    echo "# CONFIG_PACKAGE_$pkg is not set" >> .config || true
   done
   echo "✅ .config 已强制禁用 passwall 系列包"
 fi
@@ -931,5 +931,17 @@ echo "✅ 版本隐藏 uci-defaults 脚本已写入（双重保险）"
 # 返回非 0 都会让这里当场退出，后面的步骤全不执行且整轮构建中断。
 # 加密是可选增强，不该有能力搞挂构建。
 [ -f scripts/diy-part2-crypto.sh ] && . ./scripts/diy-part2-crypto.sh || true
+
+# 6. 强制确保状态插件配置正确（防止被意外剔除）
+echo "🔒 强制确保状态插件配置..."
+if [ -f ".config" ]; then
+  for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
+    # 先删除旧配置行
+    sed -i "/$pkg/d" .config 2>/dev/null || true
+    # 强制写入 =y
+    echo "CONFIG_PACKAGE_$pkg=y" >> .config || true
+  done
+  echo "✅ 状态插件配置已强制确保"
+fi
 
 echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
