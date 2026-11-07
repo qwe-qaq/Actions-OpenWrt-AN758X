@@ -268,7 +268,7 @@ jobs:
           # --- 安装编译依赖 ---
           sudo -E apt-get -yqq update
           sudo -E apt-get -yqq install build-essential clang llvm dwarves \
-            libssl-dev libelf-dev bc flex bison python3 python3-distutils \
+            libssl-dev libelf-dev bc flex bison python3 \
             xz-utils tar unzip zip zstd dos2unix ccache gettext \
             rsync file wget curl git subversion 2>/dev/null || true
 
