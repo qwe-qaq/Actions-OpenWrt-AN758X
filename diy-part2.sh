@@ -260,7 +260,7 @@ if [ -f "$BANNER" ]; then
   echo "✅ banner 版本号行已清理（保留 ASCII art）"
 fi
 
-# 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择可用镜像
+# 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择最快可用镜像
 mkdir -p files/etc/apk
 cat > files/etc/apk/repositories <<'EOF'
 https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
@@ -277,29 +277,105 @@ grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/99-apk-mirror-autodetect <<'EOF'
 #!/bin/sh
-# 首启自动选择可用的国内 ImmortalWrt apk 镜像
+# ============================================================
+# 首启自动测速选择最快的国内 ImmortalWrt apk 镜像
+# 优化点：
+#   1. 同时测试 target + main 两个路径，确保两个都可用
+#   2. 记录响应时间，选最快的，不是第一个能用的
+#   3. 等待网络就绪，避免首启时网络未通导致全不可用
+#   4. 完整日志记录，方便排查
+#   5. 全部失败时保留默认 TUNA 并记录警告
+# ============================================================
 REPOS=/etc/apk/repositories
 TARGET_PATH=snapshots/targets/airoha/an7581/packages
 PKG_PATH=snapshots/packages/aarch64_cortex-a53
+
+# 镜像列表：名称=URL
 MIRRORS="
-https://mirrors.tuna.tsinghua.edu.cn/immortalwrt
-https://mirrors.ustc.edu.cn/immortalwrt
-https://mirrors.aliyun.com/immortalwrt
+TUNA=https://mirrors.tuna.tsinghua.edu.cn/immortalwrt
+USTC=https://mirrors.ustc.edu.cn/immortalwrt
+Aliyun=https://mirrors.aliyun.com/immortalwrt
 "
-for base in $MIRRORS; do
-  if curl -fsS --connect-timeout 3 --max-time 8 "$base/$TARGET_PATH/Packages" >/dev/null 2>&1; then
-    cat > "$REPOS" <<EOF2
-$base/$TARGET_PATH
-$base/$PKG_PATH
-EOF2
-    logger -t apk-mirror "使用软件源: $base"
-    break
+
+log() {
+  logger -t apk-mirror "$@"
+  echo "[apk-mirror] $@"
+}
+
+# 等待网络就绪（最多等 15 秒）
+wait_network() {
+  local i=0
+  while [ $i -lt 15 ]; do
+    if ping -c 1 -W 2 mirrors.tuna.tsinghua.edu.cn >/dev/null 2>&1; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+  return 1
+}
+
+# 测试单个镜像是否可用（target + main 都要通）
+# 返回：响应时间（秒），失败返回空
+test_mirror() {
+  local base="$1"
+  # 测试 target 包
+  local t_start=$(date +%s%N)
+  if ! curl -fsS --connect-timeout 3 --max-time 8 "$base/$TARGET_PATH/Packages" >/dev/null 2>&1; then
+    return 1
+  fi
+  # 测试主包
+  if ! curl -fsS --connect-timeout 3 --max-time 8 "$base/$PKG_PATH/Packages" >/dev/null 2>&1; then
+    return 1
+  fi
+  local t_end=$(date +%s%N)
+  local t_cost=$(( (t_end - t_start) / 1000000 ))
+  echo "$t_cost"
+  return 0
+}
+
+log "开始自动检测软件源镜像..."
+
+if ! wait_network; then
+  log "⚠ 网络未就绪，跳过镜像检测，保留默认 TUNA"
+  exit 0
+fi
+
+best_name=""
+best_url=""
+best_time=999999
+
+for entry in $MIRRORS; do
+  name="${entry%%=*}"
+  url="${entry#*=}"
+  log "测试 $name: $url"
+  cost=$(test_mirror "$url")
+  if [ -n "$cost" ]; then
+    log "  ✅ 可用，响应 ${cost}ms"
+    if [ "$cost" -lt "$best_time" ]; then
+      best_time="$cost"
+      best_name="$name"
+      best_url="$url"
+    fi
+  else
+    log "  ❌ 不可用"
   fi
 done
+
+if [ -n "$best_name" ]; then
+  cat > "$REPOS" <<EOF2
+$best_url/$TARGET_PATH
+$best_url/$PKG_PATH
+EOF2
+  log "🎉 已切换到最快镜像: $best_name (${best_time}ms)"
+else
+  log "⚠ 所有镜像都不可用，保留默认 TUNA 配置"
+fi
+
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/99-apk-mirror-autodetect
-echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun）"
+echo "✅ 首启自动测速选择最快镜像脚本已写入（TUNA / USTC / Aliyun）"
 
 # ========== 隐藏 Argon 主题设置选项菜单（保留主题皮肤本身） ==========
 echo "🔍 隐藏 Argon 主题设置选项菜单..."
