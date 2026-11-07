@@ -790,7 +790,7 @@ jobs:
           make defconfig
           sed -i '/^CONFIG_VERSION_CODE=/d' .config 2>/dev/null || true
           sed -i '/^# CONFIG_VERSION_CODE is not set/d' .config 2>/dev/null || true
-          echo 'CONFIG_VERSION_CODE="mutoli"' >> .config
+          echo 'CONFIG_VERSION_CODE=""' >> .config
           echo "----- target device -----"
           grep -E 'CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE' .config || true
           echo "----- plugin symbols -----"
