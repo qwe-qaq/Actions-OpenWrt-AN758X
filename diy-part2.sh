@@ -943,5 +943,4 @@ if [ -f ".config" ]; then
   done
   echo "✅ 状态插件配置已强制确保"
 fi
-
 echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
