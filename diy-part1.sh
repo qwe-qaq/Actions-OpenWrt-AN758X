@@ -453,6 +453,11 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   rm -f tmp/.packageinfo tmp/.targetinfo
   rm -f tmp/info/.scan-packageinfo.stamp tmp/info/.scan-targetinfo.stamp
   rm -f tmp/.config-package.in tmp/.config-target.in
+
+  # 先安装 feeds，确保所有包都进入索引
+  echo ">>> feeds install -a（安装所有包到 feeds 索引）"
+  ./scripts/feeds install -a 2>/dev/null || true
+
   echo ">>> make prepare-tmpinfo（重新扫描 package/ 树）"
   make -s prepare-tmpinfo OPENWRT_BUILD= 2>&1 | tail -5 || true
   echo "=========================================="
@@ -588,8 +593,5 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
 else
   echo "未启用任何第三方插件"
 fi
-
-# 安装所有自定义包到 feeds 索引
-./scripts/feeds install -a 2>/dev/null || true
 
 echo "🎉 diy-part1.sh 执行完毕"
