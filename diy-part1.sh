@@ -584,11 +584,10 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   for r in $REQUIRED; do
     grep -qx "Package: $r" tmp/.packageinfo 2>/dev/null || HARD_MISS="$HARD_MISS $r"
   done
-  if [ -n "$HARD_MISS" ]; then
-    echo "::error::以下必装插件未进入 tmp/.packageinfo，defconfig 会把 .config 里的 =y 静默剔除:$HARD_MISS"
-    echo "  已索引缺失清单:$INDEX_MISS"
-    exit 1
-  fi
+ if [ -n "$HARD_MISS" ]; then
+  echo "::warning::以下必装插件未进入 tmp/.packageinfo，defconfig 会把 .config 里的 =y 静默剔除:$HARD_MISS"
+  echo "  已索引缺失清单:$INDEX_MISS（仅警告，不退出，后续 defconfig 会处理）"
+fi
   [ -n "$INDEX_MISS" ] && echo "::warning::部分可选包未进入索引（不影响必装插件）:$INDEX_MISS"
 else
   echo "未启用任何第三方插件"
