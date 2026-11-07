@@ -51,7 +51,8 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
 : "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
 : "${ADD_FTTR_TOOLS:=true}" # h3c-fttr-tools：fttrd 控制器 + fttrctl（Rust 包）
 : "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit
-                            # （以上三个都来自 openwrt-fttr 私有仓库，bitstream 由驱动加载）
+: "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面 recipe（PKG_SOURCE_URL 拉 nightly 产物）
+                            # （以上四个都来自 openwrt-fttr 私有仓库）
 
 # 这四个包只对 HM2004-DU 有意义：驱动按 @(TARGET_airoha_an7581) 限定了
 # target，界面和后端都围着重型 FTTR 主从设备转。workflow 会把 PROFILE
@@ -107,17 +108,20 @@ if [ "$ADD_LUCI_APP" = "true" ]; then
 fi
 
 # =========================================================
-# h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware —— FTTR 后端三件套 ★HM2004-DU 专属
-# 源：qwe-qaq/openwrt-fttr（私有仓库）
+# FTTR 四件套 —— 后端三件套 + 管理界面 recipe ★HM2004-DU 专属
+# 源：qwe-qaq/openwrt-fttr（私有仓库，四个包目录都在仓库根目录）
 # ⚠ 这里必须用「裸 URL」：凭证由 workflow 的 GIT_ASKPASS 在认证时回调注入，
 #   千万别拼 token —— clone 的 echo 会把它打进日志。
-# ⚠ 该仓库是 feed 形态（根目录直接是三个包目录），按目录名拷进 package/custom/
+# ⚠ 该仓库是 feed 形态（根目录直接是各包目录），按目录名拷进 package/custom/
 #   即可；目录名必须等于包名（PKG_NAME ?= $(notdir $(CURDIR)）），否则 config
 #   里的 CONFIG_PACKAGE_xxx 对不上。
 #   h3c-fmcs           KernelPackage → 索引里叫 kmod-h3c-fmcs，DEPENDS 限定
 #                      @(TARGET_airoha_an7581)，另依赖 +kmod-spi-gpio
 #   h3c-fttr-tools     Rust 包，硬 include feeds/packages/lang/rust/rust-package.mk
 #   h3c-fmcs-firmware  纯数据包，FPGA 比特流 → /lib/firmware/FTTR_TOP.sbit
+#   luci-app-fttr      界面 recipe：Makefile 用 PKG_SOURCE_URL + PKG_HASH 在
+#                      make download 阶段拉 nightly 产物（htdocs/root/po），
+#                      仓库里只存 recipe，不存前端 JS
 # ⚠ h3c-fmcs 是 KernelPackage，索引里的名字是 kmod-h3c-fmcs。下面的包索引
 #   校验内置了这层映射（pkgname_of），看到的是 ✅ h3c-fmcs → kmod-h3c-fmcs。
 # =========================================================
@@ -127,7 +131,7 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   FTTR_FEED_BRANCH="${PRIVATE_REPO_BRANCH:-main}"
   FTTR_FEED_TMP="$(mktemp -d)/openwrt-fttr"
   if ! clone "$FTTR_FEED_URL" "$FTTR_FEED_TMP" "$FTTR_FEED_BRANCH"; then
-    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware 会被 defconfig 剔除"
+    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 会被 defconfig 剔除"
     echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
     exit 1
   fi
@@ -145,6 +149,7 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   [ "$ADD_FMCS" = "true" ]       && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs"
   [ "$ADD_FTTR_TOOLS" = "true" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fttr-tools"
   [ "$ADD_FMCS_FW" = "true" ]    && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs-firmware"
+  [ "$ADD_FTTR_LUCI" = "true" ]  && FTTR_FEED_PKGS="$FTTR_FEED_PKGS luci-app-fttr"
 
   for p in $FTTR_FEED_PKGS; do
     if [ ! -f "$FTTR_FEED_TMP/$p/Makefile" ]; then
@@ -160,35 +165,12 @@ fi
 
 # =========================================================
 # luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★HM2004-DU 专属
-# 源：LazuliKao/luci-app-fttr（monorepo，包在 package/luci-app-fttr/ 子目录）
-# ⚠ 不能整仓丢进 package/custom：buildroot 只扫到 -maxdepth 5，整仓会把
-#   src/、package/ 一起扫，包符号还对不上。必须拷子目录。
-# 依赖 +luci-base +rpcd +ucode +ucode-mod-fs +h3c-fttr-tools，后者不在
-# ImmortalWrt feeds —— 见下方硬校验。
+# 2026-11-06 上游拆分：LazuliKao/luci-app-fttr 只留前端源码（htdocs/ 已进
+# .gitignore），recipe 移到 qwe-qaq/openwrt-fttr 根目录的 luci-app-fttr/，
+# 靠 PKG_SOURCE_URL + PKG_HASH 在 make download 阶段拉 nightly tarball。
+# 因此本脚本不再单独 clone 前端仓，统一由上面的 FTTR_FEED_PKGS 循环拷贝，
+# 也不再需要 chmod root/usr/libexec/*（新 payload 里没有该目录）。
 # =========================================================
-if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
-  FTTR_TMP="$(mktemp -d)/fttr"
-  if ! clone https://github.com/LazuliKao/luci-app-fttr "$FTTR_TMP" main; then
-    echo "::error::luci-app-fttr 拉取失败，config 里的 =y 会被 defconfig 剔除"
-    exit 1
-  fi
-  if [ ! -f "$FTTR_TMP/package/luci-app-fttr/Makefile" ]; then
-    echo "::error::$FTTR_TMP/package/luci-app-fttr/Makefile 不存在（上游改结构了？）"
-    exit 1
-  fi
-
-  rm -rf "$PKG_DIR/luci-app-fttr"
-  cp -a "$FTTR_TMP/package/luci-app-fttr" "$PKG_DIR/luci-app-fttr"
-
-  # Windows 检出会丢 executable bit，rpcd 插件与 hl202 脚本执行不了 → 页面全空。
-  # Makefile 里虽然有 Build/Prepare 的 chmod，这里先在源码树补一道更保险。
-  chmod 0755 "$PKG_DIR/luci-app-fttr/root/usr/libexec/fttr-hl202" \
-             "$PKG_DIR/luci-app-fttr/root/usr/libexec/rpcd/luci.fttr" 2>/dev/null || true
-
-  # po/zh_Hans 已经是 fttr.po（LUCI_BASENAME 命名），不用像 airoha-npu 那样改名
-  echo "✅ 已拷贝: luci-app-fttr (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-fttr/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
-  rm -rf "$FTTR_TMP"
-fi
 
 
 # --- Airoha SoC 状态页（NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表）---
@@ -545,12 +527,17 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     if [ "$ADD_FTTR_TOOLS" = "true" ]; then
       REQUIRED="$REQUIRED h3c-fttr-tools"
     fi
-    REQUIRED="$REQUIRED luci-app-fttr"
+    if [ "$ADD_FTTR_LUCI" = "true" ]; then
+      REQUIRED="$REQUIRED luci-app-fttr"
+    fi
     # =========================================================
     # luci-app-fttr 依赖 +h3c-fttr-tools，后者依赖 +kmod-h3c-fmcs。
     # 链条上任一节不在树里，defconfig 都会静默把整条 FTTR 剔掉 —— 与其编出
     # 一个没有 FTTR 界面的固件还不易察觉，不如在这里直接报错。
     # 前者最常见原因是缺 rust-package.mk；后者受 @(TARGET_airoha_an7581) 限制。
+    # 界面 recipe 的源码来自 PKG_SOURCE_URL（nightly tarball），PKG_HASH 由
+    # 私库里的 Makefile 维护；上游重发 nightly 后必须同步该 hash，否则
+    # make download 校验失败（workflow 会连试 3 次后终止构建）。
     # =========================================================
     if [ "$ADD_FTTR_TOOLS" = "true" ] &&
        ! grep -qx "Package: h3c-fttr-tools" tmp/.packageinfo 2>/dev/null; then
