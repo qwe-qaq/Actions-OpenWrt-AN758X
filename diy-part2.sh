@@ -4,6 +4,7 @@
 #   1) 时区 Asia/Shanghai (CST-8)
 #   2) 5G WiFi：CN / auto / HE160
 #   3) 概览页 CPU 行：USR/SYS + 每核明细
+#   4) 固件版本追加作者与构建时间
 # ================================================================
 
 set -euo pipefail
@@ -219,6 +220,15 @@ fi
 
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
 
+FW_MAIN="PonWrt SNAPSHOT mutoli / LuCI Master 26.302.04020"
+RELEASE_TPL="package/base-files/files/etc/openwrt_release"
+OSREL_TPL="package/base-files/files/usr/lib/os-release"
+
+# 两处版本信息固定为主串，不追加编译时间
+FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN}'"
+OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN}\""
+export FW_DESC_LINE OSREL_LINE
+
 # 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择可用镜像
 mkdir -p files/etc/apk
 cat > files/etc/apk/repositories <<'EOF'
@@ -262,7 +272,7 @@ echo "✅ 首启自动检测国内镜像脚本已写入（TUNA / USTC / Aliyun�
 
 find package/feeds/luci -path "*luci-app-argon-config*" -type f 2>/dev/null | while read -r f; do
   rm -f "$f" || true
-done || true# WiFi 温度标签：2.4G / 5G
+done || true # WiFi 温度标签：2.4G / 5G
 find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
   perl -0pi -e 's/["'"'"']wifi["'"'"']/"2.4G WiFi"/i' "$f" && break
 done || true
