@@ -220,14 +220,45 @@ fi
 
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
 
-FW_MAIN="PonWrt SNAPSHOT mutoli / LuCI Master 26.302.04020"
+# ========== 全面隐藏固件版本信息 ==========
+# 方式一：不再固定版本串（留空）
+FW_MAIN=""
 RELEASE_TPL="package/base-files/files/etc/openwrt_release"
 OSREL_TPL="package/base-files/files/usr/lib/os-release"
 
-# 两处版本信息固定为主串，不追加编译时间
-FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN}'"
-OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN}\""
+# 两处版本信息置空
+FW_DESC_LINE="DISTRIB_DESCRIPTION=''"
+OSREL_LINE="OPENWRT_RELEASE=\"\""
 export FW_DESC_LINE OSREL_LINE
+
+# 方式二：直接清空 openwrt_release 模板中的版本字段
+if [ -f "$RELEASE_TPL" ]; then
+  sed -i "s/^DISTRIB_DESCRIPTION=.*/DISTRIB_DESCRIPTION=''/g" "$RELEASE_TPL"
+  sed -i "s/^DISTRIB_RELEASE=.*/DISTRIB_RELEASE=''/g" "$RELEASE_TPL"
+  sed -i "s/^DISTRIB_REVISION=.*/DISTRIB_REVISION=''/g" "$RELEASE_TPL"
+  echo "✅ openwrt_release 模板版本字段已清空"
+fi
+
+# 方式三：直接清空 os-release 模板中的版本字段
+if [ -f "$OSREL_TPL" ]; then
+  sed -i "s/^OPENWRT_RELEASE=.*/OPENWRT_RELEASE=\"\"/g" "$OSREL_TPL"
+  sed -i "s/^VERSION=.*/VERSION=\"\"/g" "$OSREL_TPL"
+  echo "✅ os-release 模板版本字段已清空"
+fi
+
+# 方式四：清空 openwrt_version 文件（纯版本号）
+if [ -f "package/base-files/files/etc/openwrt_version" ]; then
+  echo -n "" > package/base-files/files/etc/openwrt_version
+  echo "✅ openwrt_version 已清空"
+fi
+
+# 方式五：修改 banner，只删除末尾版本号行，保留 ASCII art
+BANNER="package/base-files/files/etc/banner"
+if [ -f "$BANNER" ]; then
+  # 删除包含版本号格式的行（如 "OpenWrt SNAPSHOT r1234-abcdef"）
+  sed -i "/SNAPSHOT r[0-9]/d; /OpenWrt [0-9]/d; /ImmortalWrt [0-9]/d; /PonWrt SNAPSHOT/d" "$BANNER" || true
+  echo "✅ banner 版本号行已清理（保留 ASCII art）"
+fi
 
 # 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择可用镜像
 mkdir -p files/etc/apk
@@ -280,11 +311,17 @@ find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
   perl -0pi -e 's/["'"'"']wifi["'"'"']/"5G WiFi"/i' "$f" && break
 done || true
 
-# 隐藏概览页「固件版本」整行
+# 方式六：LuCI 前端删除「固件版本」整行（多文件类型搜索，确保覆盖所有版本）
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
+# 新版 JS 组件
 grep -rl "Firmware Version" package/feeds feeds --include="*.js" 2>/dev/null | while read -r f; do
   sed -i "/Firmware Version.*boardinfo.release/d" "$f" || true
-  echo "✅ 已从 $f 中删除固件版本行"
+  echo "✅ 已从 $f (JS) 中删除固件版本行"
+done || true
+# 旧版 Lua 模板
+grep -rl "Firmware Version" package/feeds feeds --include="*.htm" --include="*.lua" 2>/dev/null | while read -r f; do
+  sed -i "/Firmware Version/d" "$f" || true
+  echo "✅ 已从 $f (模板) 中删除固件版本行"
 done || true
 
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
