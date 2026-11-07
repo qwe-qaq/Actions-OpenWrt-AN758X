@@ -425,6 +425,26 @@ grep -rl "argon-config" package/feeds/luci --include="*.js" --include="*.lua" 2>
 done || true
 echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
+# 3. 强制在 .config 里禁用 argon-config（加固）
+echo "🔒 强制禁用 argon-config 包..."
+if [ -f ".config" ]; then
+  # 先删除所有相关配置行
+  sed -i '/luci-app-argon-config/d' .config 2>/dev/null || true
+  # 强制写入 is not set
+  echo "# CONFIG_PACKAGE_luci-app-argon-config is not set" >> .config
+  echo "✅ .config 已强制禁用 argon-config"
+fi
+
+# 4. 强制禁用 passwall/xray-core/sing-box（加固）
+echo "🔒 强制禁用 passwall/xray-core/sing-box..."
+if [ -f ".config" ]; then
+  for pkg in luci-app-passwall xray-core sing-box luci-app-passwall2 luci-i18n-passwall-zh-cn; do
+    sed -i "/$pkg/d" .config 2>/dev/null || true
+    echo "# CONFIG_PACKAGE_$pkg is not set" >> .config
+  done
+  echo "✅ .config 已强制禁用 passwall 系列包"
+fi
+
 # ========== IPTV 相关菜单统一移到「网络」菜单下 ==========
 echo "🔍 调整 IPTV 相关菜单位置..."
 # 通用搜索：在整个 luci feeds 里找 igmpproxy / rtp2httpd 的菜单 JSON 文件
@@ -866,7 +886,25 @@ if [ -f /etc/openwrt_version ]; then
   log "已清空 /etc/openwrt_version"
 fi
 
-log "版本信息隐藏完成"
+# 清理 LuCI 状态页里的固件版本行（多种格式都兼容）
+log "清理 LuCI 状态页版本信息..."
+for f in /usr/lib/lua/luci/controller/status.lua \
+         /usr/lib/lua/luci/view/status/index.htm \
+         /www/luci-static/resources/view/status/index.js; do
+  if [ -f "$f" ]; then
+    # 删除包含 Firmware Version / 固件版本 的行
+    sed -i "/Firmware Version/d; /固件版本/d" "$f" 2>/dev/null || true
+    log "已清理 $f"
+  fi
+done
+
+# 清理 banner
+if [ -f /etc/banner ]; then
+  sed -i "/SNAPSHOT r[0-9]/d; /OpenWrt [0-9]/d; /ImmortalWrt [0-9]/d; /PonWrt SNAPSHOT/d" /etc/banner 2>/dev/null || true
+  log "已清理 /etc/banner"
+fi
+
+log "版本信息隐藏完成（三重保险）"
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/98-hide-version
