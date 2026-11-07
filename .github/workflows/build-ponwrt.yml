@@ -811,15 +811,9 @@ jobs:
           sed -i '/luci-app-ssr-plus/d' .config 2>/dev/null || true
           echo "CONFIG_PACKAGE_luci-app-ssr-plus=y" >> .config
 
-          # 再次隐藏固件版本信息行（defconfig 会重新展开 feeds）
-          echo "🔒 再次隐藏固件版本信息行..."
-          for f in feeds/luci/applications/luci-app-attendedsysupgrade/htdocs/luci-static/resources/view/status/include/11_upgrades.js \
-                   feeds/luci/modules/luci-mod-dashboard/htdocs/luci-static/resources/view/dashboard/include/10_router.js \
-                   feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js; do
-            if [ -f "$f" ]; then
-              sed -i '/OpenWrt.*SNAPSHOT/d; /OpenWrt.*[0-9]/d; /LuCI Master/d; /luciversion/d' "$f" 2>/dev/null || true
-            fi
-          done
+          # 固件版本隐藏已在本步骤开头由 scripts/patch-luci-version.sh 完成：
+          # 把 10_system.js 的固件版本整行（含标签）从 fields 数组删除。LuCI 版本
+          # 是运行时 RPC 动态拼接的（源码无 "LuCI Master" 字面量），文本删除无效。
 
           # 再次隐藏 Argon 主题设置菜单
           echo "🔒 再次隐藏 Argon 主题设置菜单..."
