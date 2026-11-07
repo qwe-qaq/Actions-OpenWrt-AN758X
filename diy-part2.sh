@@ -4,7 +4,6 @@
 #   1) 时区 Asia/Shanghai (CST-8)
 #   2) 5G WiFi：CN / auto / HE160
 #   3) 概览页 CPU 行：USR/SYS + 每核明细
-#   4) 固件版本追加作者与构建时间
 # ================================================================
 
 set -euo pipefail
@@ -219,15 +218,6 @@ else
 fi
 
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
-
-FW_MAIN="PonWrt SNAPSHOT mutoli / LuCI Master 26.302.04020"
-RELEASE_TPL="package/base-files/files/etc/openwrt_release"
-OSREL_TPL="package/base-files/files/usr/lib/os-release"
-
-# 两处版本信息固定为主串，不追加编译时间
-FW_DESC_LINE="DISTRIB_DESCRIPTION='${FW_MAIN}'"
-OSREL_LINE="OPENWRT_RELEASE=\"${FW_MAIN}\""
-export FW_DESC_LINE OSREL_LINE
 
 # 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择可用镜像
 mkdir -p files/etc/apk
