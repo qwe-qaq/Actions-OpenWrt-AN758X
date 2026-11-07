@@ -904,6 +904,13 @@ if [ -f /etc/banner ]; then
   log "已清理 /etc/banner"
 fi
 
+# 确保默认主题是 Argon（主题皮肤正常显示）
+if [ -f /etc/config/luci ]; then
+  uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null || true
+  uci commit luci 2>/dev/null || true
+  log "已设置默认主题为 Argon"
+fi
+
 log "版本信息隐藏完成（三重保险）"
 exit 0
 EOF
