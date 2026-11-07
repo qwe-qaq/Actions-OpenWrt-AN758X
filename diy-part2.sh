@@ -391,6 +391,23 @@ grep -rl "argon-config" package/feeds/luci --include="*.js" --include="*.lua" 2>
 done || true
 echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
+# ========== IPTV 相关菜单统一移到「网络」菜单下 ==========
+echo "🔍 调整 IPTV 相关菜单位置..."
+# 找到 igmpproxy / rtp2httpd 的菜单 JSON 文件，把 parent 从 "services" 改成 "network"
+# 这样所有 IPTV 相关配置都集中在网络菜单下
+MENU_DIRS="package/feeds/luci/luci-app-igmpproxy package/feeds/luci/luci-app-rtp2httpd"
+for dir in $MENU_DIRS; do
+  if [ -d "$dir" ]; then
+    # 搜索菜单 JSON 文件
+    find "$dir" -name "*.json" -path "*menu*" 2>/dev/null | while read -r f; do
+      # 把 "services" 父菜单改成 "network"
+      sed -i 's/"parent":\s*"services"/"parent": "network"/g' "$f" || true
+      echo "✅ 已调整菜单位置: $f"
+    done || true
+  fi
+done || true
+echo "✅ IPTV 相关菜单已移到网络菜单下"
+
 # WiFi 温度标签：2.4G / 5G
 # WiFi 温度标签：区分 2.4G / 5G（按出现顺序：第一个=2.4G，第二个=5G）
 echo "🔍 修改 WiFi 温度标签..."
