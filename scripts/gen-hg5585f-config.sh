@@ -15,6 +15,10 @@ case "$PROFILE" in
 esac
 
 echo "== 生成配置: $DEVICE =="
+
+# 先清除所有机型配置，只保留目标机型（避免全机型编译）
+sed -i '/CONFIG_TARGET_DEVICE_/d; /^CONFIG_TARGET_MULTI_PROFILE=/d' .config
+
 {
   echo "CONFIG_TARGET_MULTI_PROFILE=y"
   echo "CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${DEVICE}=y"
