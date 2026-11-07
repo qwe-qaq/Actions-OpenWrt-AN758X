@@ -827,6 +827,7 @@ jobs:
           grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
             sed -i '/argon-config/d' "$f" 2>/dev/null || true
           done || true
+          
           # 强制启用 IPTV 相关包
           echo "🔒 强制启用 IPTV 相关包..."
           for pkg in luci-app-iptv luci-i18n-iptv-zh-cn; do
