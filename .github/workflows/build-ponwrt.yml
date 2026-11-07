@@ -32,10 +32,6 @@ env:
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
-  PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
-  PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
-  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'LazuliKao/luci-app-fttr' }}
-  FTTR_LUCI_BRANCH: ${{ github.event.inputs.fttr_luci_branch || 'main' }}
 
 on:
   repository_dispatch:
@@ -76,7 +72,6 @@ on:
           - unionman_ung00a
           - znxt_zn504xg-d
           - znxt_zn515xg-d
-          - h3c_hm2004-du
           - nokia_xg-040g-mf
           - nokia_xg-040g-mf-ubi
           - all
@@ -151,18 +146,6 @@ on:
         options:
           - 'true'
           - 'false'
-      private_repo:
-        description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
-        required: false
-        default: 'qwe-qaq/openwrt-fttr'
-        type: choice
-        options:
-          - qwe-qaq/openwrt-fttr
-          - none
-      private_repo_branch:
-        description: '私有仓库分支'
-        required: false
-        default: 'main'
       ssh:
         description: 'SSH connection to Actions (仅 main 分支、仓库所有者可触发)'
         required: false
@@ -188,9 +171,6 @@ jobs:
     outputs:
       cache_prefix: ${{ steps.cache-key.outputs.prefix }}
       cache_key: ${{ steps.cache-key.outputs.key }}
-    env:
-      HAS_APP_CREDS: ${{ secrets.PRIVATE_SOURCE_APP_ID != '' && secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY != '' }}
-      HAS_PAT: ${{ secrets.PRIVATE_REPO_TOKEN != '' || secrets.FTTR_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -447,193 +427,6 @@ jobs:
           echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
 
-      - name: Probe FTTR repos visibility
-        id: probe
-        if: ${{ env.PRIVATE_REPO != 'none' && (env.PROFILE == 'h3c_hm2004-du' || github.event.inputs.profile == 'h3c_hm2004-du') }}
-        run: |
-          NEED=false
-          # 状态词走 stdout 给调用方捕获，人读的提示走 stderr（否则会被 $( ) 吃掉）
-          probe() {  # probe <owner/repo> <branch> → stdout: public|private
-            local repo="$1" br="$2"
-            if git ls-remote --exit-code --heads "https://github.com/${repo}" \
-                 "refs/heads/${br}" >/dev/null 2>&1; then
-              echo "  ✅ ${repo} (分支 ${br}) —— 公开，匿名可读，不需要凭证" >&2
-              echo "public"
-            else
-              echo "  🔒 ${repo} (分支 ${br}) —— 匿名不可读，需要凭证" >&2
-              echo "private"
-            fi
-          }
-
-          echo "=== FTTR 仓库可见性探测（匿名）==="
-          R1=$(probe "${PRIVATE_REPO}" "${PRIVATE_REPO_BRANCH}")
-          R2=$(probe "${FTTR_LUCI_REPO}" "${FTTR_LUCI_BRANCH}")
-
-          if [ "$R1" = "private" ] || [ "$R2" = "private" ]; then
-            NEED=true
-          fi
-          echo "need_token=$NEED" >> "$GITHUB_OUTPUT"
-          echo "backend=$R1" >> "$GITHUB_OUTPUT"
-          echo "luci=$R2" >> "$GITHUB_OUTPUT"
-
-          # 只把「私有」的仓库放进令牌白名单。
-          # ⚠ 踩过的坑：repositories 里写了一个 App 没安装的仓库（哪怕是公开仓库），
-          #   令牌申请直接 422 —— "at least one repository that does not exist or
-          #   is not accessible to the parent installation"。公开仓库本来就不需要
-          #   令牌，列进去纯属给自己找麻烦。
-          TOKEN_REPOS=""
-          add_repo() {  # add_repo <public|private> <owner/repo>
-            [ "$1" = "private" ] || return 0
-            local name="${2#*/}"   # 去掉 owner/ 前缀，只留仓库名
-            if [ -z "$TOKEN_REPOS" ]; then TOKEN_REPOS="$name"; else TOKEN_REPOS="$TOKEN_REPOS,$name"; fi
-          }
-          add_repo "$R1" "${PRIVATE_REPO}"
-          add_repo "$R2" "${FTTR_LUCI_REPO}"
-          echo "token_repos=$TOKEN_REPOS" >> "$GITHUB_OUTPUT"
-          echo "  令牌白名单（仅私有仓库）：${TOKEN_REPOS:-（空）}"
-          echo "结论：$( [ "$NEED" = true ] && echo '至少一个需要凭证 → 申请 App 令牌' || echo '全部公开 → 跳过取凭证' )"
-          echo "--- 凭证配置情况（只看有没有配，不打印值）---"
-          echo "  App 凭证 (PRIVATE_SOURCE_APP_ID + _PRIVATE_KEY): ${HAS_APP_CREDS}"
-          echo "  PAT 回退 (PRIVATE_REPO_TOKEN / FTTR_TOKEN):      ${HAS_PAT}"
-          if [ "$NEED" = true ] && [ "${HAS_APP_CREDS}" != "true" ] && [ "${HAS_PAT}" != "true" ]; then
-            echo "::error::仓库需要凭证但两种凭证都没配 —— 后面的 Setup 步骤会失败退出"
-          fi
-
-      - name: Create private source token
-        id: private-source-token
-        if: ${{ steps.probe.outputs.need_token == 'true' && env.HAS_APP_CREDS == 'true' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@v3
-        with:
-
-          app-id: ${{ secrets.PRIVATE_SOURCE_APP_ID }}
-          client-id: ${{ secrets.PRIVATE_SOURCE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: read
-          repositories: ${{ steps.probe.outputs.token_repos }}
-
-      - name: Prepare private Git authentication
-        if: ${{ steps.probe.outputs.need_token == 'true' && (env.HAS_APP_CREDS == 'true' || env.HAS_PAT == 'true') }}
-        run: |
-          install -m 700 "$GITHUB_WORKSPACE/scripts/git_askpass.sh" "$RUNNER_TEMP/git-askpass"
-          echo "GIT_ASKPASS=$RUNNER_TEMP/git-askpass" >> "$GITHUB_ENV"
-          echo "GIT_TERMINAL_PROMPT=0" >> "$GITHUB_ENV"
-
-      - name: Setup private repo credentials
-        id: private_repo
-        env:
-          APP_TOKEN: ${{ steps.private-source-token.outputs.token }}
-          SEC_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          SEC_TOKEN_LEGACY: ${{ secrets.FTTR_TOKEN }}
-        run: |
-          # 本次不拉私有仓库：关掉 FTTR 全家桶（开关支持环境变量覆盖）
-          if [ "${PRIVATE_REPO}" = "none" ]; then
-            echo "ADD_FTTR=false" >> "$GITHUB_ENV"
-            echo "⚠ PRIVATE_REPO=none —— 跳过私有仓库，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 都不会编进固件"
-            exit 0
-          fi
-
-          # 只有 HM2004-DU 会拉私库（diy-part1.sh 的 FTTR_PROFILE 判定）
-          if [ "${PROFILE}" != "h3c_hm2004-du" ]; then
-            echo "ℹ PROFILE=${PROFILE} —— 不涉及 FTTR 私库，跳过凭证注入"
-            exit 0
-          fi
-
-          # 探测已认定两个仓库都能匿名读 → 一个凭证都不注入
-          if [ "${{ steps.probe.outputs.need_token }}" != "true" ]; then
-            echo "✅ 探测结论：${PRIVATE_REPO} / ${FTTR_LUCI_REPO} 均可匿名访问（公开仓库），不注入任何凭证"
-            exit 0
-          fi
-
-          # 日志脱敏：URL 里的 user:token@ 一律替换成 ***@
-          sanitize() { sed -E 's#://[^@/]+@#://***@#g'; }
-
-          # 1) 选凭证：App 安装令牌 > PAT Secret
-          if [ -n "${APP_TOKEN}" ]; then
-            TOKEN="${APP_TOKEN}"; SRC="GitHub App 安装令牌"
-          elif [ "${HAS_APP_CREDS}" = "true" ] && [ "${{ steps.probe.outputs.need_token }}" = "true" ]; then
-            echo "::warning::App 凭证已配置，但令牌申请失败（见上一步日志）。"
-            echo "  最常见原因：App 的 Install App → Only select repositories 里没勾上探测判定为私有的仓库，"
-            echo "  或 repositories 白名单混进了未安装的仓库（HTTP 422）。回退到 PAT。"
-          elif [ -n "${SEC_TOKEN}" ]; then
-            TOKEN="${SEC_TOKEN}"; SRC="Secret PRIVATE_REPO_TOKEN"
-          elif [ -n "${SEC_TOKEN_LEGACY}" ]; then
-            TOKEN="${SEC_TOKEN_LEGACY}"; SRC="Secret FTTR_TOKEN（旧名）"
-          else
-            echo "::error::探测到私有仓库，但没有任何可用凭证（GitHub App / PRIVATE_REPO_TOKEN / FTTR_TOKEN 全空）。"
-            echo "  推荐：Secrets 配 PRIVATE_SOURCE_APP_ID + PRIVATE_SOURCE_APP_PRIVATE_KEY"
-            echo "        （GitHub App 装到下面标为 private 的仓库，Permissions → Contents: Read-only）"
-            echo "  回退：Secrets 配 PRIVATE_REPO_TOKEN（PAT，需对私有仓库有 Contents 读权限）"
-            exit 1
-          fi
-          echo "::add-mask::$TOKEN"
-          echo "ℹ 凭证来源：$SRC"
-
-          # 令牌落到一个 600 的文件里给 askpass 读：不进 git config、不进命令行
-          TOKEN_FILE="$RUNNER_TEMP/gh_token"
-          printf '%s' "$TOKEN" > "$TOKEN_FILE"
-          chmod 600 "$TOKEN_FILE"
-
-          # ⚠ 写 $GITHUB_ENV 只对【后续步骤】生效，本步骤当前进程看不见！
-          #   下面紧跟的带凭证复检就在本步骤里跑，所以必须同时 export 一份，
-          #   否则 askpass 拿到空的 GH_TOKEN_FILE，报
-          #   "unable to read askpass response ... terminal prompts disabled"。
-          #   GIT_ASKPASS 是上一步写进 GITHUB_ENV 的，本步骤已经能读到。
-          export GH_TOKEN_FILE="$TOKEN_FILE"
-          export GIT_ASKPASS="${GIT_ASKPASS:-$RUNNER_TEMP/git-askpass}"
-          echo "GH_TOKEN_FILE=$TOKEN_FILE" >> "$GITHUB_ENV"
-
-          # 自检：直接问一次 askpass，拿不到令牌就别往下跑（省得git 报黑盒错误）
-          if ! ASK=$(GIT_ASKPASS="$GIT_ASKPASS" "$GIT_ASKPASS" "Password for 'https://github.com':" 2>/dev/null) \
-               || [ -z "$ASK" ]; then
-            echo "::error::askpass 自检失败：拿不到令牌（令牌文件为空？askpass 脚本没可执行位？）"
-            exit 1
-          fi
-          echo "  askpass 自检通过（令牌长度 ${#ASK}，值不打印）"
-
-          # checkout 注入的 extraheader 会直接盖掉 askpass 的凭证（本地 config 优先级最高）。
-          # persist-credentials: false 已让 checkout 不再写入，这里双保险清一下。
-          git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local  --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-
-          # 3) 带凭证复检：只复检「探测判定为私有」的仓库，公开的不碰
-          #    （公开仓库带令牌也能过，但没必要，且会掩盖配置问题）
-          FAIL=0
-          for pair in "${{ steps.probe.outputs.backend }}:${PRIVATE_REPO}:${PRIVATE_REPO_BRANCH}" \
-                      "${{ steps.probe.outputs.luci }}:${FTTR_LUCI_REPO}:${FTTR_LUCI_BRANCH}"; do
-            vis="${pair%%:*}";     rest="${pair#*:}"
-            repo="${rest%%:*}";    br="${rest#*:}"
-            [ "$vis" = "private" ] || continue
-
-            if ERR=$(git ls-remote --exit-code --heads "https://github.com/${repo}" \
-                       "refs/heads/${br}" 2>&1); then
-              echo "✅ 凭证可用：${repo} (分支 ${br})"
-              continue
-            fi
-
-            FAIL=1
-            echo "::error::仓库 ${repo} 的分支 ${br} 带凭证访问失败"
-            echo "--- git 原始错误（已脱敏）---"
-            printf '%s\n' "$ERR" | sanitize
-
-            # 4) 用 API 把失败原因分开报（App 令牌和 PAT 的排查路径完全不同）
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-                     -H "Authorization: Bearer $TOKEN" \
-                     -H "Accept: application/vnd.github+json" \
-                     "https://api.github.com/repos/${repo}")
-            echo "--- API /repos/${repo} → HTTP $CODE ---"
-            case "$CODE" in
-              200) echo "ℹ API 可见但 git 取不到：多半是分支 ${br} 不存在（注意大小写）" ;;
-              404) echo "ℹ 404：App 没安装到 ${repo}（App → Install App → Only select repositories 里要有它），或上一步 repositories 白名单漏了；走 PAT 则是 Repository access 没选中该仓库 / 只勾了默认的 Metadata（读不了 git）" ;;
-              401) echo "ℹ 401：令牌无效或已过期（App 安装令牌只有 1 小时、不跨 job 复用），或私钥与 App ID 不匹配" ;;
-              403) echo "ℹ 403：权限不足或限流，确认 App 的 Contents 权限至少是 Read-only" ;;
-              *)   echo "ℹ HTTP $CODE：见上方 git 原始错误" ;;
-            esac
-          done
-
-          exit "$FAIL"
-
       # =========================================================
       # 3. dl 下载缓存（源码包，2~5 GB）
       # ⚠ 不能用 actions/cache 的 save-always（v5 已 deprecated，原文
@@ -688,7 +481,7 @@ jobs:
       #   缓存里没有 → `--frozen` 不给补救机会，编到 rust 包必挂：
       #     failed to download `core_detect v1.0.0`
       #   只摘「禁止联网」，--locked 保留（版本仍锁死，结果可复现）。
-      #   必须在 diy-part1 之后（私有包是那一步 clone 进来的）。
+      #   必须在 diy-part1 之后（可选插件是那一步拉取的）。
       # =========================================================
       - name: Relax cargo offline flags
         continue-on-error: true
@@ -794,6 +587,18 @@ jobs:
             bash "$WS/scripts/gen-hg5585f-config.sh"
           else
             echo "ℹ 未找到 ${PROFILE} 对应的配置脚本，跳过"
+          fi
+          # 通用单设备裁剪：上面 kconfig.pl 用 '>' 重新生成 .config，会冲掉
+          # Apply device profile 的裁剪，且多数机型没有 gen 脚本。这里在 defconfig
+          # 前强制再裁一次，确保只编译选定机型（PROFILE=all 时保留基座全部设备）。
+          if [ "${PROFILE}" != "all" ]; then
+            sed -i '/CONFIG_TARGET_DEVICE_/d; /^CONFIG_TARGET_MULTI_PROFILE=/d' .config
+            {
+              echo "CONFIG_TARGET_MULTI_PROFILE=y"
+              echo "CONFIG_TARGET_DEVICE_airoha_${SOC}_DEVICE_${PROFILE}=y"
+              echo "CONFIG_TARGET_DEVICE_PACKAGES_airoha_${SOC}_DEVICE_${PROFILE}=\"\""
+            } >> .config
+            echo "已裁剪为单一机型: airoha_${SOC}_DEVICE_${PROFILE}"
           fi
           make defconfig
           # 强制确保状态插件 + 全部依赖配置正确（防止被 defconfig 剔除）
@@ -1249,9 +1054,7 @@ jobs:
       # =========================================================
       - name: SSH connection to Actions
         uses: mxschmitt/action-tmate@v3
-        # 原条件 contains(github.event.action, 'ssh') 对 workflow_dispatch 永假
-        # （event.action 恒为 "workflow_dispatch"），叠加 ref==refs/heads/main
-        # （本 workflow 在 FTTR 分支运行）后，ssh=true 从来不会触发。
+        # 调试入口默认关闭；仅当手动选择 ssh=true 且触发者为仓库所有者时才打开。
         # 保留 owner 校验：调试入口只对仓库所有者开放。
         if: >-
           github.event.inputs.ssh == 'true'
