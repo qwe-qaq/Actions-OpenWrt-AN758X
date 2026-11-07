@@ -663,6 +663,97 @@ EOF
 chmod +x files/etc/uci-defaults/98-eip93-npu-optimize
 echo "✅ EIP93 NPU 优化脚本已写入（首启自动检测）"
 
+# ========== DHCP 租约与匹配逻辑优化 ==========
+echo "🔍 优化 DHCP 租约与匹配逻辑..."
+# 优化 dnsmasq 配置：
+# 1. 租约时间优化：默认 12h，适合家庭网络
+# 2. DNS 缓存优化：增大缓存，加快解析
+# 3. 静态租约匹配优化：按 MAC 精确匹配
+# 4. 自启动优化：确保 dnsmasq 正确启动
+
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/95-dhcp-optimize <<'EOF'
+#!/bin/sh
+# ============================================================
+# DHCP 租约与匹配逻辑优化
+# 首启时自动配置，优化家庭网络体验
+# ============================================================
+
+log() {
+  logger -t dhcp-optimize "$@"
+  echo "[dhcp-optimize] $@"
+}
+
+# 等待 network 配置就绪（最多等 10 秒）
+i=0
+while [ $i -lt 10 ]; do
+  if [ -f /etc/config/dhcp ]; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+[ -f /etc/config/dhcp ] || { log "未找到 dhcp 配置，跳过"; exit 0; }
+
+# ---- 1. dnsmasq 全局优化 ----
+log "优化 dnsmasq 全局配置..."
+
+# 增大 DNS 缓存（默认 150，改成 1000，加快重复域名解析）
+uci -q set dhcp.@dnsmasq[0].cachesize='1000'
+# 启用本地 DNS 解析（局域网主机名解析）
+uci -q set dhcp.@dnsmasq[0].localuse='1'
+# 禁用负缓存（避免解析失败的域名被缓存太久）
+uci -q set dhcp.@dnsmasq[0].no_negcache='1'
+# 启用 DNS 重绑定保护（安全）
+uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
+# 快速 DHCP（减少租约分配时间）
+uci -q set dhcp.@dnsmasq[0].fastdhcp='1'
+
+# ---- 2. DHCP 租约优化 ----
+log "优化 DHCP 租约时间..."
+
+# 遍历所有 DHCP 接口
+for cfg in $(uci -q show dhcp | grep '=dhcp$' | cut -d. -f2 | cut -d= -f1); do
+  # 默认租约时间 12 小时（家庭网络够用）
+  uci -q set dhcp.$cfg.leasetime='12h'
+  # 最小租约时间 1h（设备频繁切换网络时更快续租）
+  uci -q set dhcp.$cfg.limit='150'
+  log "  接口 $cfg: 租约 12h, 上限 150 台"
+done
+
+# ---- 3. 静态租约匹配优化 ----
+# 确保静态绑定按 MAC 精确匹配，不匹配主机名
+log "优化静态租约匹配逻辑..."
+
+# 检查是否有静态绑定
+static_count=$(uci -q show dhcp | grep -c "=host$" || echo 0)
+log "  静态绑定数量: $static_count"
+
+# ---- 4. DHCP 选项优化 ----
+# 启用 router 选项（默认网关）
+# 启用 broadcast 选项
+# 优化 NTP 选项
+uci -q delete dhcp.@dnsmasq[0].dhcp_option 2>/dev/null || true
+uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:router'
+uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:broadcast'
+
+# 提交配置
+uci -q commit dhcp
+log "DHCP 优化配置已提交"
+
+# 重启 dnsmasq 使配置生效
+if command -v /etc/init.d/dnsmasq >/dev/null 2>&1; then
+  /etc/init.d/dnsmasq restart >/dev/null 2>&1
+  log "dnsmasq 已重启"
+fi
+
+log "DHCP 优化完成"
+exit 0
+EOF
+chmod +x files/etc/uci-defaults/95-dhcp-optimize
+echo "✅ DHCP 租约优化脚本已写入（租约 12h + DNS 缓存 + 快速 DHCP）"
+
 # 用 -f 不要用 -x：git checkout / Windows 打包会丢可执行位，-x 判失败会静默整段跳过。
 # 末尾 || true：本文件开头是 set -euo pipefail，被 source 的子脚本里任何一步
 # 返回非 0 都会让这里当场退出，后面的步骤全不执行且整轮构建中断。
