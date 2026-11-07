@@ -152,6 +152,20 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
        "$PKG_DIR/luci-app-airoha-npu/po/zh_Hans/airoha-npu.po"
     echo "  ✅ po 文件已改名: airoha-npu.po"
   fi
+  # =========================================================
+  # 健壮性补丁（rpcd 后端 luci.airoha_npu）：
+  #   ① devmem 空值保护：避免 $(($(devmem ...))) 读取失败返回空时，
+  #      dash/busybox ash 报算术错误中断、bash 静默归零；
+  #   ② PLL 等待增强：保留 20ms 经验等待，等待前后读回已知 PCW/CHG
+  #      做一致性确认，异常即 rollback（无 lock 位手册，不臆造寄存器地址）。
+  #   补丁脚本 patch-airoha-npu.py 随仓库分发，幂等可重复执行。
+  # =========================================================
+  NPU_RPCD="$PKG_DIR/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu"
+  if [ -f "$GITHUB_WORKSPACE/patch-airoha-npu.py" ]; then
+    python3 "$GITHUB_WORKSPACE/patch-airoha-npu.py" "$NPU_RPCD"
+  else
+    echo "::warning::未找到 patch-airoha-npu.py，跳过 NPU 健壮性补丁"
+  fi
 fi
 
 # =========================================================
