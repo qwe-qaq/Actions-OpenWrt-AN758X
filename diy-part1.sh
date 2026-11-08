@@ -171,6 +171,12 @@ fi
 # ⚠ Makefile 里 LUCI_DEPENDS:=+luci-base +rpcd +h3c-fttr-tools，后端仍由
 #   上面的私有 feed 提供；私库里若还留着旧 luci-app-fttr/ 目录，本脚本
 #   不会拷它（已从 FTTR_FEED_PKGS 移除），可自行清理避免混淆。
+# ⚠ CI 生成的 Makefile 漏了「# call BuildPackage - OpenWrt buildroot
+#   signature」这行标记。include/scan.mk 第 77 行用文本 grep 找
+#   'call BuildPackage' 决定哪些 Makefile 进 FILELIST（不展开 include），
+#   缺这行 → 目录不进扫描列表 → 不 DUMP → tmp/.packageinfo 里没有这个包，
+#   表现就是「包拷好了、别的包全 ✅、唯独 luci-app-fttr ❌」，且没有 dump.txt。
+#   所以每次拷贝后幂等补一行，见下方。
 # =========================================================
 if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   # 用独立变量名，不与 workflow 里指向「源码仓 main 分支」的 FTTR_LUCI_* 冲突
@@ -191,6 +197,15 @@ if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE
   rm -rf "$PKG_DIR/luci-app-fttr"
   cp -a "$FTTR_TMP" "$PKG_DIR/luci-app-fttr"
   rm -rf "$PKG_DIR/luci-app-fttr/.git"   # 别把克隆元数据带进源码树
+
+  # scan.mk 只按文本 grep 'call BuildPackage' 收录 Makefile，luci.mk 里的真实
+  # 调用不算（grep 不展开 include）。上游 CI 模板漏了这行标准注释，补回来：
+  # 注释行对 make 无害，但缺了它整个包不会被索引。上游修好后自动跳过。
+  FTTR_MK="$PKG_DIR/luci-app-fttr/Makefile"
+  if ! grep -qE 'call[[:space:]]+(Build/DefaultTargets|BuildPackage|BuildContainer|BuildCompose|KernelPackage)' "$FTTR_MK"; then
+    printf '\n# call BuildPackage - OpenWrt buildroot signature\n' >> "$FTTR_MK"
+    echo "⚠ 已补 BuildPackage 扫描标记（上游 package 分支 Makefile 缺失）"
+  fi
 
   echo "✅ 已拷贝: luci-app-fttr (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-fttr/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
   rm -rf "$FTTR_TMP"
@@ -447,13 +462,23 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   #   只删 tmp/.packageinfo 是不够的：prepare-tmpinfo 有 scan_unchanged
   #   优化（拿 tmp/info/.scan-*.stamp 比 mtime），stamp 还在且没有更新的
   #   Makefile 时它会跳过扫描 —— 结果 .packageinfo 被删了却没人重建，
-  #   索引反而空了。所以 stamp 也要一起删。
+  #   索引反而空了。所以 stamp 和 scan.mk 的 .files* 清单缓存都要一起删。
+  #   actions/cache 恢复的 tmp/ 会保留旧时间戳，而 cp -a 又保留源 mtime：
+  #   新拷进来的 Makefile 可能比重建的 stamp 还旧，scan_unchanged 会判
+  #   「无变化」直接跳过 —— 表现就是「包拷好了、别的包都 ✅、唯独它缺席」。
+  #   所以删完缓存再统一刷新 package/custom 下所有文件的时间戳。
   # =========================================================
   rm -f tmp/.packageinfo tmp/.targetinfo
   rm -f tmp/info/.scan-packageinfo.stamp tmp/info/.scan-targetinfo.stamp
+  rm -f tmp/info/.files* 2>/dev/null
   rm -f tmp/.config-package.in tmp/.config-target.in
+  find "$PKG_DIR" -type f -exec touch {} + 2>/dev/null || true
   echo ">>> make prepare-tmpinfo（重新扫描 package/ 树）"
-  make -s prepare-tmpinfo OPENWRT_BUILD= 2>&1 | tail -5 || true
+  make prepare-tmpinfo OPENWRT_BUILD= V=s 2>&1 | tail -60
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo "::error::prepare-tmpinfo 执行失败，索引不会更新（见上方输出）"
+    exit 1
+  fi
   echo "=========================================="
   echo "包索引校验（判据：tmp/.packageinfo）"
   echo "=========================================="
@@ -506,9 +531,16 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
       echo "  ❌ $n（包名 $pn）—— tmp/.packageinfo 里查不到"
       INDEX_MISS="$INDEX_MISS $pn"
       # 真实错误在这里（scan.mk 落盘路径 logs/<SCAN_DIR>/<相对目录>/dump.txt）
+      DUMP_SHOWN=0
       for f in "logs/package/$n/dump.txt" "logs/package/custom/$n/dump.txt"; do
-        [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
+        [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; DUMP_SHOWN=1; }
       done
+      # scan.mk 压根没落 dump.txt（缓存跳过扫描时常见）：直接单包 dump 一次，
+      # 把 Makefile 解析错误打出来，避免「查不到但日志里没有任何线索」。
+      if [ "$DUMP_SHOWN" -eq 0 ]; then
+        echo "===== 直接 dump: make $d/dump V=s ====="
+        make "$d/dump" V=s 2>&1 | tail -40
+      fi
     fi
   done
   echo "------------------------------------------"
