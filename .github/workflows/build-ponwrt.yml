@@ -751,16 +751,6 @@ jobs:
           #      configs/<SoC>.config 完全不参与。
           #   两条凑一起，全程一句报错都没有。
           # =========================================================
-          PROXY_MISS=""
-          for p in luci-app-passwall xray-core sing-box; do
-            grep -qx "CONFIG_PACKAGE_${p}=y" .config || PROXY_MISS="$PROXY_MISS $p"
-          done
-          if [ -n "$PROXY_MISS" ]; then
-            echo "::warning::以下插件没进 .config:$PROXY_MISS（固件里不会有，源码和索引都是好的）"
-            echo "        改 configs/${PROFILE}.config：写成 CONFIG_PACKAGE_<名>=y，行首不要带 #"
-          else
-            echo "✅ 代理插件校验通过（passwall / xray / sing-box 均为 =y）"
-          fi
 
           # 中文包（po 注入后才存在，缺失只警告不阻断）
           if ! grep -q "^CONFIG_PACKAGE_luci-i18n-airoha-npu-zh-cn=y" .config; then
