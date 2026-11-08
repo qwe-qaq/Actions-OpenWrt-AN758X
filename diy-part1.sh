@@ -51,8 +51,8 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
 : "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
 : "${ADD_FTTR_TOOLS:=true}" # h3c-fttr-tools：fttrd 控制器 + fttrctl（Rust 包）
 : "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit
-: "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面 recipe（PKG_SOURCE_URL 拉 nightly 产物）
-                            # （以上四个都来自 openwrt-fttr 私有仓库）
+: "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面包（公开 CI 生成的 package 分支）
+                            # （前三个来自 openwrt-fttr 私有仓库；界面包单独拉，见下方）
 
 # 这四个包只对 HM2004-DU 有意义：驱动按 @(TARGET_airoha_an7581) 限定了
 # target，界面和后端都围着重型 FTTR 主从设备转。workflow 会把 PROFILE
@@ -108,20 +108,17 @@ if [ "$ADD_LUCI_APP" = "true" ]; then
 fi
 
 # =========================================================
-# FTTR 四件套 —— 后端三件套 + 管理界面 recipe ★HM2004-DU 专属
-# 源：qwe-qaq/openwrt-fttr（私有仓库，四个包目录都在仓库根目录）
+# h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware —— FTTR 后端三件套 ★HM2004-DU 专属
+# 源：qwe-qaq/openwrt-fttr（私有仓库）
 # ⚠ 这里必须用「裸 URL」：凭证由 workflow 的 GIT_ASKPASS 在认证时回调注入，
 #   千万别拼 token —— clone 的 echo 会把它打进日志。
-# ⚠ 该仓库是 feed 形态（根目录直接是各包目录），按目录名拷进 package/custom/
+# ⚠ 该仓库是 feed 形态（根目录直接是三个包目录），按目录名拷进 package/custom/
 #   即可；目录名必须等于包名（PKG_NAME ?= $(notdir $(CURDIR)）），否则 config
 #   里的 CONFIG_PACKAGE_xxx 对不上。
 #   h3c-fmcs           KernelPackage → 索引里叫 kmod-h3c-fmcs，DEPENDS 限定
 #                      @(TARGET_airoha_an7581)，另依赖 +kmod-spi-gpio
 #   h3c-fttr-tools     Rust 包，硬 include feeds/packages/lang/rust/rust-package.mk
 #   h3c-fmcs-firmware  纯数据包，FPGA 比特流 → /lib/firmware/FTTR_TOP.sbit
-#   luci-app-fttr      界面 recipe：Makefile 用 PKG_SOURCE_URL + PKG_HASH 在
-#                      make download 阶段拉 nightly 产物（htdocs/root/po），
-#                      仓库里只存 recipe，不存前端 JS
 # ⚠ h3c-fmcs 是 KernelPackage，索引里的名字是 kmod-h3c-fmcs。下面的包索引
 #   校验内置了这层映射（pkgname_of），看到的是 ✅ h3c-fmcs → kmod-h3c-fmcs。
 # =========================================================
@@ -131,7 +128,7 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   FTTR_FEED_BRANCH="${PRIVATE_REPO_BRANCH:-main}"
   FTTR_FEED_TMP="$(mktemp -d)/openwrt-fttr"
   if ! clone "$FTTR_FEED_URL" "$FTTR_FEED_TMP" "$FTTR_FEED_BRANCH"; then
-    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 会被 defconfig 剔除"
+    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware 会被 defconfig 剔除；luci-app-fttr 因依赖 +h3c-fttr-tools 也会被连带剔除"
     echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
     exit 1
   fi
@@ -149,7 +146,6 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   [ "$ADD_FMCS" = "true" ]       && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs"
   [ "$ADD_FTTR_TOOLS" = "true" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fttr-tools"
   [ "$ADD_FMCS_FW" = "true" ]    && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs-firmware"
-  [ "$ADD_FTTR_LUCI" = "true" ]  && FTTR_FEED_PKGS="$FTTR_FEED_PKGS luci-app-fttr"
 
   for p in $FTTR_FEED_PKGS; do
     if [ ! -f "$FTTR_FEED_TMP/$p/Makefile" ]; then
@@ -165,12 +161,40 @@ fi
 
 # =========================================================
 # luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★HM2004-DU 专属
-# 2026-11-06 上游拆分：LazuliKao/luci-app-fttr 只留前端源码（htdocs/ 已进
-# .gitignore），recipe 移到 qwe-qaq/openwrt-fttr 根目录的 luci-app-fttr/，
-# 靠 PKG_SOURCE_URL + PKG_HASH 在 make download 阶段拉 nightly tarball。
-# 因此本脚本不再单独 clone 前端仓，统一由上面的 FTTR_FEED_PKGS 循环拷贝，
-# 也不再需要 chmod root/usr/libexec/*（新 payload 里没有该目录）。
+# 源：LazuliKao/luci-app-fttr 的 package 分支（公开仓库，CI 生成的完整
+#     OpenWrt 包：根目录直接是 Makefile + htdocs/ + po/ + root/）。
+# 2026-11-08 起上游把构建产物发布到该分支，Makefile 不再用
+# PKG_SOURCE_URL / PKG_HASH 下载 nightly tarball —— 前端 JS 已随包提交，
+# 因此编译阶段不再联网取前端、也不存在 hash 失效问题。
+# ⚠ package 分支是 orphan + force-push 生成（每次只有 1 个 commit），
+#   必须用 --depth 1 每次重新 clone，不能复用旧目录。
+# ⚠ Makefile 里 LUCI_DEPENDS:=+luci-base +rpcd +h3c-fttr-tools，后端仍由
+#   上面的私有 feed 提供；私库里若还留着旧 luci-app-fttr/ 目录，本脚本
+#   不会拷它（已从 FTTR_FEED_PKGS 移除），可自行清理避免混淆。
 # =========================================================
+if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
+  # 用独立变量名，不与 workflow 里指向「源码仓 main 分支」的 FTTR_LUCI_* 冲突
+  FTTR_PKG_REPO="${FTTR_PKG_REPO:-LazuliKao/luci-app-fttr}"
+  FTTR_PKG_BRANCH="${FTTR_PKG_BRANCH:-package}"
+  FTTR_TMP="$(mktemp -d)/fttr"
+  if ! clone "https://github.com/${FTTR_PKG_REPO}" "$FTTR_TMP" "$FTTR_PKG_BRANCH"; then
+    echo "::error::luci-app-fttr 的 ${FTTR_PKG_BRANCH} 分支拉取失败，config 里的 =y 会被 defconfig 剔除"
+    exit 1
+  fi
+  # 分支根目录就该是完整包；顺手确认前端产物在，防止 CI 生成了空壳
+  if [ ! -f "$FTTR_TMP/Makefile" ] || \
+     [ ! -d "$FTTR_TMP/htdocs/luci-static/resources/view/fttr" ]; then
+    echo "::error::$FTTR_TMP 不是完整 OpenWrt 包（缺 Makefile 或 htdocs/view/fttr）"
+    exit 1
+  fi
+
+  rm -rf "$PKG_DIR/luci-app-fttr"
+  cp -a "$FTTR_TMP" "$PKG_DIR/luci-app-fttr"
+  rm -rf "$PKG_DIR/luci-app-fttr/.git"   # 别把克隆元数据带进源码树
+
+  echo "✅ 已拷贝: luci-app-fttr (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-fttr/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
+  rm -rf "$FTTR_TMP"
+fi
 
 
 # --- Airoha SoC 状态页（NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表）---
@@ -535,9 +559,8 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     # 链条上任一节不在树里，defconfig 都会静默把整条 FTTR 剔掉 —— 与其编出
     # 一个没有 FTTR 界面的固件还不易察觉，不如在这里直接报错。
     # 前者最常见原因是缺 rust-package.mk；后者受 @(TARGET_airoha_an7581) 限制。
-    # 界面 recipe 的源码来自 PKG_SOURCE_URL（nightly tarball），PKG_HASH 由
-    # 私库里的 Makefile 维护；上游重发 nightly 后必须同步该 hash，否则
-    # make download 校验失败（workflow 会连试 3 次后终止构建）。
+    # 界面包来自 LazuliKao/luci-app-fttr 的 package 分支，前端 JS 已随包
+    # 提交，编译不联网；后端三件套仍由私有 feed 提供。
     # =========================================================
     if [ "$ADD_FTTR_TOOLS" = "true" ] &&
        ! grep -qx "Package: h3c-fttr-tools" tmp/.packageinfo 2>/dev/null; then
