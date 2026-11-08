@@ -557,8 +557,8 @@ mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/97-ssr-plus-firewall <<'EOF'
 #!/bin/sh
 # ============================================================
-# SSR Plus+ 防火墙双向支持（自动适配 fw3 / fw4）
-# 首启时自动检测防火墙版本，配置对应的双向规则
+# SSR Plus+ 防火墙双向支持（优化版）
+# 只在 SSR 启用时配置，通过 UCI 方式添加，不破坏原有规则
 # ============================================================
 
 log() {
@@ -566,69 +566,36 @@ log() {
   echo "[ssr-firewall] $@"
 }
 
-# 检测防火墙版本
-if command -v fw4 >/dev/null 2>&1; then
-  FW_VER="fw4"
-  log "检测到 fw4 (nftables)"
-elif command -v fw3 >/dev/null 2>&1; then
-  FW_VER="fw3"
-  log "检测到 fw3 (iptables)"
-else
-  log "未检测到防火墙，跳过"
+# 第一步：检测 SSR Plus+ 是否启用
+ENABLED=$(uci get shadowsocksr.@global[0].enable 2>/dev/null || echo "0")
+if [ "$ENABLED" != "1" ]; then
+  log "SSR Plus+ 未启用，跳过防火墙配置"
   exit 0
 fi
 
-# 等待 SSR Plus+ 服务启动（最多等 10 秒）
-i=0
-while [ $i -lt 10 ]; do
-  if pgrep -f "ssr-redir\|shadowsocksr" >/dev/null 2>&1; then
-    break
-  fi
-  i=$((i + 1))
-  sleep 1
-done
-
-# 获取 SSR Plus+ 端口（默认 1080）
-SSR_PORT=$(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo "1080")
-log "SSR Plus+ 端口: $SSR_PORT"
-
-# 配置双向防火墙规则
-if [ "$FW_VER" = "fw4" ]; then
-  # fw4 nftables 规则
-  # 入站：允许 SSR Plus+ 端口接收
-  nft add rule inet fw4 input tcp dport "$SSR_PORT" accept comment "SSR Plus+ input" 2>/dev/null || true
-  # 出站：允许 SSR Plus+ 进程向外连接（skuid 是 UID，不是 PID）
-  SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
-  if [ -n "$SSR_PID" ]; then
-    # 获取进程的 UID
-    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
-    if [ -n "$SSR_UID" ]; then
-      nft add rule inet fw4 output meta skuid "$SSR_UID" accept comment "SSR Plus+ output" 2>/dev/null || true
-    fi
-  fi
-  # 转发：允许代理流量转发
-  nft add rule inet fw4 forward meta comment "SSR Plus+ forward" accept 2>/dev/null || true
-  log "fw4 双向防火墙规则已配置"
-else
-  # fw3 iptables 规则
-  # 入站：允许 SSR Plus+ 端口接收
-  iptables -I INPUT -p tcp --dport "$SSR_PORT" -j ACCEPT -m comment --comment "SSR Plus+ input" 2>/dev/null || true
-  # 出站：允许 SSR Plus+ 进程向外连接（用 pidof 更可靠，兼容 busybox）
-  SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
-  if [ -n "$SSR_PID" ]; then
-    # 获取进程的 UID
-    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
-    if [ -n "$SSR_UID" ]; then
-      iptables -I OUTPUT -m owner --uid-owner "$SSR_UID" -j ACCEPT -m comment --comment "SSR Plus+ output" 2>/dev/null || true
-    fi
-  fi
-  # 转发：允许代理流量转发
-  iptables -I FORWARD -p tcp -m comment --comment "SSR Plus+ forward" -j ACCEPT 2>/dev/null || true
-  log "fw3 双向防火墙规则已配置"
+# 第二步：检测 SSR 服务是否真的在运行
+if ! pgrep -f "ssr-redir\|shadowsocksr" >/dev/null 2>&1; then
+  log "SSR Plus+ 服务未运行，跳过"
+  exit 0
 fi
+
+# 第三步：通过 UCI 配置防火墙规则（不直接操作 nftables）
+SSR_PORT=$(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo "1080")
+
+# 添加 UCI 防火墙规则
+uci add firewall rule
+uci set firewall.@rule[-1].name='SSR Plus+ Input'
+uci set firewall.@rule[-1].src='wan'
+uci set firewall.@rule[-1].dest_port="$SSR_PORT"
+uci set firewall.@rule[-1].proto='tcp'
+uci set firewall.@rule[-1].target='ACCEPT'
+
+uci commit firewall
+log "SSR Plus+ 防火墙规则已通过 UCI 配置完成"
 
 exit 0
 EOF
+
 chmod +x files/etc/uci-defaults/97-ssr-plus-firewall
 echo "✅ SSR Plus+ 双向防火墙脚本已写入（自动适配 fw3/fw4）"
 
