@@ -506,6 +506,16 @@ jobs:
           [ -d files/etc/uci-defaults ] && chmod +x files/etc/uci-defaults/* 2>/dev/null
 
           # =========================================================
+          # 软件源优化：直接预置中科大源，去掉外国源
+          # =========================================================
+          echo "📦 优化软件源配置（默认中科大 USTC）..."
+          DISTFEEDS="package/base-files/files/etc/opkg/distfeeds.conf"
+          if [ -f "$DISTFEEDS" ]; then
+            sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn|g' "$DISTFEEDS"
+            echo "  ✅ 默认源已改为中科大 USTC"
+          fi
+
+          # =========================================================
           # 关键：先用源码自带的 configs/<soc>.config 基座打底
           # 精简配置只写差异，很多符号（如 LUCI_LANG_zh_Hans、TAR_*、
           # MAC80211_*）是 tristate 且无 default，默认 n。若直接拿精简
@@ -615,6 +625,9 @@ jobs:
           echo "🔒 强制启用 SSR Plus+..."
           sed -i '/luci-app-ssr-plus/d' .config 2>/dev/null || true
           echo "CONFIG_PACKAGE_luci-app-ssr-plus=y" >> .config
+          # 安装 SSR Plus+ 依赖的内核（避免没有内核导致反复重启）
+          echo "CONFIG_PACKAGE_xray-core=y" >> .config
+          echo "CONFIG_PACKAGE_sing-box=y" >> .config
 
           # 固件版本隐藏已在本步骤开头由 scripts/patch-luci-version.sh 完成：
           # 把 10_system.js 的固件版本整行（含标签）从 fields 数组删除。LuCI 版本
