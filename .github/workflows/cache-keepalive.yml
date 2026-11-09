@@ -114,10 +114,12 @@ jobs:
           #   （不加就是 "mkdir: cannot create directory '/workdir': Permission denied"，
           #    整个保活 job 直接红）。缓存写入时的绝对路径是 /workdir/openwrt/...，
           #   restore 只会往这个路径解压，所以目录必须【在这里】就建好并交给 $USER。
-          sudo mkdir -p /workdir/openwrt/.ccache \
-                        /workdir/openwrt/staging_dir/host \
-                        /workdir/openwrt/staging_dir/hostpkg \
-                        /workdir/openwrt/staging_dir/toolchain
+          #
+          # ⚠ 三个 staging_dir 子目录必须单独建出来：actions/cache/restore 对
+          #   "path 指向不存在的目录"行为未定义（实测可能直接 miss）。
+          #   glob `host*` 覆盖 host 与 hostpkg，`tool*` 覆盖 toolchain 与
+          #   toolchain-*。用 brace expansion 一行解决。
+          sudo mkdir -p /workdir/openwrt/{.ccache,staging_dir/{host,hostpkg,toolchain}}
           sudo chown -R "$USER":"$USER" /workdir
 
       - name: Restore ${{ matrix.key }}
@@ -131,10 +133,26 @@ jobs:
             /workdir/openwrt/staging_dir/tool*
           key: ${{ matrix.key }}
 
+      # 第一次 restore 网络抖动时补一次：这次保活白做的话，下次定时任务
+      # 可能在 7 天窗口外才轮到，缓存就被回收了。重试成本低、收益明显。
+      - name: Restore retry (network flake)
+        if: steps.t.outputs.cache-hit != 'true'
+        id: t2
+        uses: actions/cache/restore@v5
+        continue-on-error: true
+        with:
+          path: |
+            /workdir/openwrt/.ccache
+            /workdir/openwrt/staging_dir/host*
+            /workdir/openwrt/staging_dir/tool*
+          key: ${{ matrix.key }}
+
       - name: Result
         if: always()
         run: |
+          # 优先看第一次，失败再看重试
           HIT='${{ steps.t.outputs.cache-hit }}'
+          [ "$HIT" = "true" ] || HIT='${{ steps.t2.outputs.cache-hit }}'
           if [ "$HIT" = "true" ]; then
             echo "✅ 命中并已刷新访问时间"
           else
