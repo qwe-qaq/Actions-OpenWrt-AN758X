@@ -866,7 +866,7 @@ jobs:
           # 编完发现界面里没这个菜单时才察觉就晚了
           # =========================================================
           OPT_MISS=""
-          for p in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
+          for p in luci-app-airoha-npu luci-app-pon-status luci-app-natmode luci-app-igmpproxy; do
             if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
               OPT_MISS="$OPT_MISS $p"
               echo "::warning::${p} 在 defconfig 后未启用"
