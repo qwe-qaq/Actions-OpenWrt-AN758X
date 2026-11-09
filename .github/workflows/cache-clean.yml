@@ -67,26 +67,34 @@ jobs:
           DELETED=0
           FAILED=0
 
-          del() {  # del <id> <key>
-            if gh cache delete "$1" -R "$GITHUB_REPOSITORY" 2>/dev/null; then
-              echo "  ✅ $2"
-              DELETED=$((DELETED+1))
+          # ⚠ 所有分支统一用「先导出到文件，再用 < file 读」的形式。
+          #   原来的 `gh cache list ... | while read` 会让 while 在子 shell
+          #   里执行，DELETED/FAILED 的递增丢失（回到主 shell 后永远是 0）。
+          #   改成 `< file` 后 while 在主 shell 里跑，计数器有效。
+          export CACHE_LIST_TSV="/tmp/cache-list.tsv"
+
+          dump_cache_list() {  # $1=可选 --key 前缀过滤器
+            if [ -n "${1:-}" ]; then
+              gh cache list -R "$GITHUB_REPOSITORY" --limit 200 --key "$1" \
+                --json id,key --jq '.[] | [.id,.key] | @tsv' > "$CACHE_LIST_TSV"
             else
-              echo "  ⚠️  失败 $2"
-              FAILED=$((FAILED+1))
+              gh cache list -R "$GITHUB_REPOSITORY" --limit 200 \
+                --json id,key --jq '.[] | [.id,.key] | @tsv' > "$CACHE_LIST_TSV"
             fi
           }
 
           case "$MODE" in
             all)
               echo "=== 模式 all：删除全部缓存（含 dl）==="
-              gh cache list -R "$GITHUB_REPOSITORY" --limit 200 --json id,key \
-                --jq '.[] | [.id,.key] | @tsv' |
-                while IFS=$'\t' read -r id key; do
-                  [ -n "${id:-}" ] || continue
-                  gh cache delete "$id" -R "$GITHUB_REPOSITORY" 2>/dev/null \
-                    && echo "  ✅ $key" || echo "  ⚠️  $key"
-                done
+              dump_cache_list
+              while IFS=$'\t' read -r id key; do
+                [ -n "${id:-}" ] || continue
+                if gh cache delete "$id" -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  echo "  ✅ $key"; DELETED=$((DELETED+1))
+                else
+                  echo "  ⚠️  $key"; FAILED=$((FAILED+1))
+                fi
+              done < "$CACHE_LIST_TSV"
 
               # 「全删」也必须把 Release 备份清掉，否则下次构建会从备份
               # 原样恢复回来 —— 用户以为清了，其实没清。
@@ -98,7 +106,7 @@ jobs:
               else
                 echo "  （release $CACHE_RELEASE 不存在，跳过）"
               fi
-              exit 0
+              echo "删除 $DELETED 个，失败 $FAILED 个"
               ;;
 
             backup)
@@ -107,37 +115,40 @@ jobs:
                 echo "（release $CACHE_RELEASE 不存在）"; exit 0
               fi
 
-              # 资产名形如 ponwrt-<源>-<分支>-<soc>-<sha40>.tzst，
-              # 去掉末尾提交号即为「前缀」，同前缀只留 createdAt 最新那个
               LAST=""
-              gh release view "$CACHE_RELEASE" -R "$GITHUB_REPOSITORY" \
-                --json assets -q '.assets[] | "\(.createdAt) \(.name)"' |
-                sort -r | awk '{print $2}' |
-                while IFS= read -r name; do
-                  [ -n "$name" ] || continue
-                  p=$(printf '%s' "$name" | sed -E 's/-[0-9a-f]{40}\.tzst$//')
-                  if [ "$p" = "$LAST" ]; then
-                    echo "  🗑  $name"
-                    gh release delete-asset "$CACHE_RELEASE" "$name" \
-                      -R "$GITHUB_REPOSITORY" -y 2>/dev/null || echo "  ⚠️  删除失败 $name"
-                  else
-                    LAST="$p"
-                    echo "  ✅ 保留 $name"
-                  fi
-                done
-              exit 0
+              while IFS= read -r name; do
+                [ -n "$name" ] || continue
+                p=$(printf '%s' "$name" | sed -E 's/-[0-9a-f]{40}\.tzst$//')
+                if [ "$p" = "$LAST" ]; then
+                  echo "  🗑  $name"
+                  gh release delete-asset "$CACHE_RELEASE" "$name" \
+                    -R "$GITHUB_REPOSITORY" -y 2>/dev/null \
+                    && DELETED=$((DELETED+1)) \
+                    || { echo "  ⚠️  删除失败 $name"; FAILED=$((FAILED+1)); }
+                else
+                  LAST="$p"
+                  echo "  ✅ 保留 $name"
+                fi
+              done < <(gh release view "$CACHE_RELEASE" -R "$GITHUB_REPOSITORY" \
+                         --json assets -q '.assets[] | "\(.createdAt) \(.name)"' \
+                       | sort -r | awk '{print $2}')
+              echo "删除 $DELETED 个，失败 $FAILED 个"
               ;;
+
             prefix)
               [ -n "$PREFIX" ] || { echo "::error::mode=prefix 必须填 prefix"; exit 1; }
               echo "=== 模式 prefix：删除 ${PREFIX}* ==="
-              gh cache list -R "$GITHUB_REPOSITORY" --limit 200 --key "$PREFIX" \
-                --json id,key --jq '.[] | [.id,.key] | @tsv' |
-                while IFS=$'\t' read -r id key; do
-                  [ -n "${id:-}" ] || continue
-                  gh cache delete "$id" -R "$GITHUB_REPOSITORY" 2>/dev/null \
-                    && echo "  ✅ $key" || echo "  ⚠️  $key"
-                done
-              exit 0
+              # ⚠ gh cache list --key 本身就是前缀匹配（API 的 key 参数语义）
+              dump_cache_list "$PREFIX"
+              while IFS=$'\t' read -r id key; do
+                [ -n "${id:-}" ] || continue
+                if gh cache delete "$id" -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  echo "  ✅ $key"; DELETED=$((DELETED+1))
+                else
+                  echo "  ⚠️  $key"; FAILED=$((FAILED+1))
+                fi
+              done < "$CACHE_LIST_TSV"
+              echo "删除 $DELETED 个，失败 $FAILED 个"
               ;;
 
             *)
