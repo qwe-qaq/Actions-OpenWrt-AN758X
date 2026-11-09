@@ -32,10 +32,6 @@ env:
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
-  PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
-  PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
-  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'LazuliKao/luci-app-fttr' }}
-  FTTR_LUCI_BRANCH: ${{ github.event.inputs.fttr_luci_branch || 'main' }}
 
 on:
   repository_dispatch:
@@ -76,7 +72,6 @@ on:
           - unionman_ung00a
           - znxt_zn504xg-d
           - znxt_zn515xg-d
-          - h3c_hm2004-du
           - nokia_xg-040g-mf
           - nokia_xg-040g-mf-ubi
           - all
@@ -117,7 +112,7 @@ on:
           - toolchain-only
       ignore_cache:
         description: '忽略构建缓存强制重编（跳过一次恢复，仍会存新一代）'
-        required: false
+        required: true
         default: 'false'
         type: choice
         options:
@@ -151,18 +146,6 @@ on:
         options:
           - 'true'
           - 'false'
-      private_repo:
-        description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
-        required: false
-        default: 'qwe-qaq/openwrt-fttr'
-        type: choice
-        options:
-          - qwe-qaq/openwrt-fttr
-          - none
-      private_repo_branch:
-        description: '私有仓库分支'
-        required: false
-        default: 'main'
       ssh:
         description: 'SSH connection to Actions (仅 main 分支、仓库所有者可触发)'
         required: false
@@ -188,9 +171,6 @@ jobs:
     outputs:
       cache_prefix: ${{ steps.cache-key.outputs.prefix }}
       cache_key: ${{ steps.cache-key.outputs.key }}
-    env:
-      HAS_APP_CREDS: ${{ secrets.PRIVATE_SOURCE_APP_ID != '' && secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY != '' }}
-      HAS_PAT: ${{ secrets.PRIVATE_REPO_TOKEN != '' || secrets.FTTR_TOKEN != '' }}
 
     steps:
       - name: Checkout
@@ -268,7 +248,7 @@ jobs:
           # --- 安装编译依赖 ---
           sudo -E apt-get -yqq update
           sudo -E apt-get -yqq install build-essential clang llvm dwarves \
-            libssl-dev libelf-dev bc flex bison python3 python3-distutils \
+            libssl-dev libelf-dev bc flex bison python3 \
             xz-utils tar unzip zip zstd dos2unix ccache gettext \
             rsync file wget curl git subversion 2>/dev/null || true
 
@@ -435,204 +415,12 @@ jobs:
               || steps.release-restore.outputs.restored == 'true')
         env:
           RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
-          # 精确 = 「这份缓存就是当前这个提交编出来的」。两条通道都算：
-          #   actions/cache  cache-hit=true（key 完全相等）
-          #   Release 备份   资产名去掉 .tzst 后 == 本次 key
-          # 前缀回退 / Release 取到旧代都不算，源码比缓存新，必须让 make 重编。
-          CACHE_EXACT: ${{ (steps.cache-restore.outputs.cache-hit == 'true' || (steps.release-restore.outputs.restored_key != '' && steps.release-restore.outputs.restored_key == steps.cache-key.outputs.key)) && 'true' || 'false' }}
         run: |
           cd "$CACHE_ROOT"
           echo "来源: $RESTORED_FROM"
           echo "actions/cache 精确命中: ${{ steps.cache-restore.outputs.cache-hit }}"
           echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
-
-      - name: Probe FTTR repos visibility
-        id: probe
-        if: ${{ env.PRIVATE_REPO != 'none' && (env.PROFILE == 'h3c_hm2004-du' || github.event.inputs.profile == 'h3c_hm2004-du') }}
-        run: |
-          NEED=false
-          # 状态词走 stdout 给调用方捕获，人读的提示走 stderr（否则会被 $( ) 吃掉）
-          probe() {  # probe <owner/repo> <branch> → stdout: public|private
-            local repo="$1" br="$2"
-            if git ls-remote --exit-code --heads "https://github.com/${repo}" \
-                 "refs/heads/${br}" >/dev/null 2>&1; then
-              echo "  ✅ ${repo} (分支 ${br}) —— 公开，匿名可读，不需要凭证" >&2
-              echo "public"
-            else
-              echo "  🔒 ${repo} (分支 ${br}) —— 匿名不可读，需要凭证" >&2
-              echo "private"
-            fi
-          }
-
-          echo "=== FTTR 仓库可见性探测（匿名）==="
-          R1=$(probe "${PRIVATE_REPO}" "${PRIVATE_REPO_BRANCH}")
-          R2=$(probe "${FTTR_LUCI_REPO}" "${FTTR_LUCI_BRANCH}")
-
-          if [ "$R1" = "private" ] || [ "$R2" = "private" ]; then
-            NEED=true
-          fi
-          echo "need_token=$NEED" >> "$GITHUB_OUTPUT"
-          echo "backend=$R1" >> "$GITHUB_OUTPUT"
-          echo "luci=$R2" >> "$GITHUB_OUTPUT"
-
-          # 只把「私有」的仓库放进令牌白名单。
-          # ⚠ 踩过的坑：repositories 里写了一个 App 没安装的仓库（哪怕是公开仓库），
-          #   令牌申请直接 422 —— "at least one repository that does not exist or
-          #   is not accessible to the parent installation"。公开仓库本来就不需要
-          #   令牌，列进去纯属给自己找麻烦。
-          TOKEN_REPOS=""
-          add_repo() {  # add_repo <public|private> <owner/repo>
-            [ "$1" = "private" ] || return 0
-            local name="${2#*/}"   # 去掉 owner/ 前缀，只留仓库名
-            if [ -z "$TOKEN_REPOS" ]; then TOKEN_REPOS="$name"; else TOKEN_REPOS="$TOKEN_REPOS,$name"; fi
-          }
-          add_repo "$R1" "${PRIVATE_REPO}"
-          add_repo "$R2" "${FTTR_LUCI_REPO}"
-          echo "token_repos=$TOKEN_REPOS" >> "$GITHUB_OUTPUT"
-          echo "  令牌白名单（仅私有仓库）：${TOKEN_REPOS:-（空）}"
-          echo "结论：$( [ "$NEED" = true ] && echo '至少一个需要凭证 → 申请 App 令牌' || echo '全部公开 → 跳过取凭证' )"
-          echo "--- 凭证配置情况（只看有没有配，不打印值）---"
-          echo "  App 凭证 (PRIVATE_SOURCE_APP_ID + _PRIVATE_KEY): ${HAS_APP_CREDS}"
-          echo "  PAT 回退 (PRIVATE_REPO_TOKEN / FTTR_TOKEN):      ${HAS_PAT}"
-          if [ "$NEED" = true ] && [ "${HAS_APP_CREDS}" != "true" ] && [ "${HAS_PAT}" != "true" ]; then
-            echo "::error::仓库需要凭证但两种凭证都没配 —— 后面的 Setup 步骤会失败退出"
-          fi
-
-      - name: Create private source token
-        id: private-source-token
-        if: ${{ steps.probe.outputs.need_token == 'true' && env.HAS_APP_CREDS == 'true' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@v3
-        with:
-
-          app-id: ${{ secrets.PRIVATE_SOURCE_APP_ID }}
-          client-id: ${{ secrets.PRIVATE_SOURCE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-contents: read
-          repositories: ${{ steps.probe.outputs.token_repos }}
-
-      - name: Prepare private Git authentication
-        if: ${{ steps.probe.outputs.need_token == 'true' && (env.HAS_APP_CREDS == 'true' || env.HAS_PAT == 'true') }}
-        run: |
-          install -m 700 "$GITHUB_WORKSPACE/scripts/git_askpass.sh" "$RUNNER_TEMP/git-askpass"
-          echo "GIT_ASKPASS=$RUNNER_TEMP/git-askpass" >> "$GITHUB_ENV"
-          echo "GIT_TERMINAL_PROMPT=0" >> "$GITHUB_ENV"
-
-      - name: Setup private repo credentials
-        id: private_repo
-        env:
-          APP_TOKEN: ${{ steps.private-source-token.outputs.token }}
-          SEC_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          SEC_TOKEN_LEGACY: ${{ secrets.FTTR_TOKEN }}
-        run: |
-          # 本次不拉私有仓库：关掉 FTTR 全家桶（开关支持环境变量覆盖）
-          if [ "${PRIVATE_REPO}" = "none" ]; then
-            echo "ADD_FTTR=false" >> "$GITHUB_ENV"
-            echo "⚠ PRIVATE_REPO=none —— 跳过私有仓库，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 都不会编进固件"
-            exit 0
-          fi
-
-          # 只有 HM2004-DU 会拉私库（diy-part1.sh 的 FTTR_PROFILE 判定）
-          if [ "${PROFILE}" != "h3c_hm2004-du" ]; then
-            echo "ℹ PROFILE=${PROFILE} —— 不涉及 FTTR 私库，跳过凭证注入"
-            exit 0
-          fi
-
-          # 探测已认定两个仓库都能匿名读 → 一个凭证都不注入
-          if [ "${{ steps.probe.outputs.need_token }}" != "true" ]; then
-            echo "✅ 探测结论：${PRIVATE_REPO} / ${FTTR_LUCI_REPO} 均可匿名访问（公开仓库），不注入任何凭证"
-            exit 0
-          fi
-
-          # 日志脱敏：URL 里的 user:token@ 一律替换成 ***@
-          sanitize() { sed -E 's#://[^@/]+@#://***@#g'; }
-
-          # 1) 选凭证：App 安装令牌 > PAT Secret
-          if [ -n "${APP_TOKEN}" ]; then
-            TOKEN="${APP_TOKEN}"; SRC="GitHub App 安装令牌"
-          elif [ "${HAS_APP_CREDS}" = "true" ] && [ "${{ steps.probe.outputs.need_token }}" = "true" ]; then
-            echo "::warning::App 凭证已配置，但令牌申请失败（见上一步日志）。"
-            echo "  最常见原因：App 的 Install App → Only select repositories 里没勾上探测判定为私有的仓库，"
-            echo "  或 repositories 白名单混进了未安装的仓库（HTTP 422）。回退到 PAT。"
-          elif [ -n "${SEC_TOKEN}" ]; then
-            TOKEN="${SEC_TOKEN}"; SRC="Secret PRIVATE_REPO_TOKEN"
-          elif [ -n "${SEC_TOKEN_LEGACY}" ]; then
-            TOKEN="${SEC_TOKEN_LEGACY}"; SRC="Secret FTTR_TOKEN（旧名）"
-          else
-            echo "::error::探测到私有仓库，但没有任何可用凭证（GitHub App / PRIVATE_REPO_TOKEN / FTTR_TOKEN 全空）。"
-            echo "  推荐：Secrets 配 PRIVATE_SOURCE_APP_ID + PRIVATE_SOURCE_APP_PRIVATE_KEY"
-            echo "        （GitHub App 装到下面标为 private 的仓库，Permissions → Contents: Read-only）"
-            echo "  回退：Secrets 配 PRIVATE_REPO_TOKEN（PAT，需对私有仓库有 Contents 读权限）"
-            exit 1
-          fi
-          echo "::add-mask::$TOKEN"
-          echo "ℹ 凭证来源：$SRC"
-
-          # 令牌落到一个 600 的文件里给 askpass 读：不进 git config、不进命令行
-          TOKEN_FILE="$RUNNER_TEMP/gh_token"
-          printf '%s' "$TOKEN" > "$TOKEN_FILE"
-          chmod 600 "$TOKEN_FILE"
-
-          # ⚠ 写 $GITHUB_ENV 只对【后续步骤】生效，本步骤当前进程看不见！
-          #   下面紧跟的带凭证复检就在本步骤里跑，所以必须同时 export 一份，
-          #   否则 askpass 拿到空的 GH_TOKEN_FILE，报
-          #   "unable to read askpass response ... terminal prompts disabled"。
-          #   GIT_ASKPASS 是上一步写进 GITHUB_ENV 的，本步骤已经能读到。
-          export GH_TOKEN_FILE="$TOKEN_FILE"
-          export GIT_ASKPASS="${GIT_ASKPASS:-$RUNNER_TEMP/git-askpass}"
-          echo "GH_TOKEN_FILE=$TOKEN_FILE" >> "$GITHUB_ENV"
-
-          # 自检：直接问一次 askpass，拿不到令牌就别往下跑（省得git 报黑盒错误）
-          if ! ASK=$(GIT_ASKPASS="$GIT_ASKPASS" "$GIT_ASKPASS" "Password for 'https://github.com':" 2>/dev/null) \
-               || [ -z "$ASK" ]; then
-            echo "::error::askpass 自检失败：拿不到令牌（令牌文件为空？askpass 脚本没可执行位？）"
-            exit 1
-          fi
-          echo "  askpass 自检通过（令牌长度 ${#ASK}，值不打印）"
-
-          # checkout 注入的 extraheader 会直接盖掉 askpass 的凭证（本地 config 优先级最高）。
-          # persist-credentials: false 已让 checkout 不再写入，这里双保险清一下。
-          git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          git config --local  --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-
-          # 3) 带凭证复检：只复检「探测判定为私有」的仓库，公开的不碰
-          #    （公开仓库带令牌也能过，但没必要，且会掩盖配置问题）
-          FAIL=0
-          for pair in "${{ steps.probe.outputs.backend }}:${PRIVATE_REPO}:${PRIVATE_REPO_BRANCH}" \
-                      "${{ steps.probe.outputs.luci }}:${FTTR_LUCI_REPO}:${FTTR_LUCI_BRANCH}"; do
-            vis="${pair%%:*}";     rest="${pair#*:}"
-            repo="${rest%%:*}";    br="${rest#*:}"
-            [ "$vis" = "private" ] || continue
-
-            if ERR=$(git ls-remote --exit-code --heads "https://github.com/${repo}" \
-                       "refs/heads/${br}" 2>&1); then
-              echo "✅ 凭证可用：${repo} (分支 ${br})"
-              continue
-            fi
-
-            FAIL=1
-            echo "::error::仓库 ${repo} 的分支 ${br} 带凭证访问失败"
-            echo "--- git 原始错误（已脱敏）---"
-            printf '%s\n' "$ERR" | sanitize
-
-            # 4) 用 API 把失败原因分开报（App 令牌和 PAT 的排查路径完全不同）
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-                     -H "Authorization: Bearer $TOKEN" \
-                     -H "Accept: application/vnd.github+json" \
-                     "https://api.github.com/repos/${repo}")
-            echo "--- API /repos/${repo} → HTTP $CODE ---"
-            case "$CODE" in
-              200) echo "ℹ API 可见但 git 取不到：多半是分支 ${br} 不存在（注意大小写）" ;;
-              404) echo "ℹ 404：App 没安装到 ${repo}（App → Install App → Only select repositories 里要有它），或上一步 repositories 白名单漏了；走 PAT 则是 Repository access 没选中该仓库 / 只勾了默认的 Metadata（读不了 git）" ;;
-              401) echo "ℹ 401：令牌无效或已过期（App 安装令牌只有 1 小时、不跨 job 复用），或私钥与 App ID 不匹配" ;;
-              403) echo "ℹ 403：权限不足或限流，确认 App 的 Contents 权限至少是 Read-only" ;;
-              *)   echo "ℹ HTTP $CODE：见上方 git 原始错误" ;;
-            esac
-          done
-
-          exit "$FAIL"
 
       # =========================================================
       # 3. dl 下载缓存（源码包，2~5 GB）
@@ -647,19 +435,19 @@ jobs:
         uses: actions/cache/restore@v5
         continue-on-error: true
         with:
-          path: /workdir/openwrt/dl
+          path: ${{ env.CACHE_ROOT }}/dl
           # 按分支 + 周号：同一周内复用同一条目。
           # 原先用 github.run_number → 每次运行都 save 一份新副本，
           # 10GB 配额会被迅速刷满并淘汰掉有用的旧缓存。
           # ⚠ 用 SOURCE_SLUG（`pbs05/ponwrt` → `pbs05-ponwrt`），别用 SOURCE：
           #   key 里带 `/` 本身能存，但与工具链 key 的写法不一致，后续按前缀
           #   批量操作会漏掉这一条。
-          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
+          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
           # 第二条是旧格式（SOURCE 原值，带斜杠）：只为平滑迁移，本轮拿到本周
           # 那份 1.2 GB 后会按新格式存一份，旧的 7 天无访问自动回收。下版可删。
           restore-keys: |
-            ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-
-            ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'master' }}-
+            ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-
+            ponwrt-dl-${{ env.SOURCE }}-${{ env.REPO_BRANCH }}-
 
       # =========================================================
       # 4. 更新并安装 Feeds
@@ -688,7 +476,7 @@ jobs:
       #   缓存里没有 → `--frozen` 不给补救机会，编到 rust 包必挂：
       #     failed to download `core_detect v1.0.0`
       #   只摘「禁止联网」，--locked 保留（版本仍锁死，结果可复现）。
-      #   必须在 diy-part1 之后（私有包是那一步 clone 进来的）。
+      #   必须在 diy-part1 之后（可选插件是那一步拉取的）。
       # =========================================================
       - name: Relax cargo offline flags
         continue-on-error: true
@@ -711,6 +499,47 @@ jobs:
           # git 可能在 checkout 时丢掉 exec bit，rpcd 就执行不了 tempinfo
           [ -d files/sbin ] && chmod +x files/sbin/* 2>/dev/null
           [ -d files/etc/uci-defaults ] && chmod +x files/etc/uci-defaults/* 2>/dev/null
+
+          # =========================================================
+          # 软件源优化：全面清理外国源，全部替换为中科大 USTC
+          # =========================================================
+          echo "📦 优化软件源配置（全面清理外国源）..."
+
+          # 1. 扫描 etc/opkg/ 下所有配置文件
+          echo "  🔍 扫描 opkg 配置目录..."
+          OPKG_DIR="package/base-files/files/etc/opkg"
+          if [ -d "$OPKG_DIR" ]; then
+            find "$OPKG_DIR" -type f -name "*.conf" | while read f; do
+              echo "    📄 处理: $f"
+              sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
+              sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
+              head -3 "$f" | sed 's/^/      /'
+            done
+            echo "  ✅ opkg 配置目录清理完成"
+          fi
+
+          # 2. 扫描 apk 配置目录（新版包管理器）
+          echo "  🔍 扫描 apk 配置目录..."
+          APK_DIR="package/base-files/files/etc/apk"
+          if [ -d "$APK_DIR" ]; then
+            find "$APK_DIR" -type f | while read f; do
+              echo "    📄 处理: $f"
+              sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
+              sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
+              head -3 "$f" | sed 's/^/      /'
+            done
+            echo "  ✅ apk 配置目录清理完成"
+          fi
+
+          # 3. 扫描所有 package 里的 opkg/apk 配置
+          echo "  🔍 扫描其他 package 里的配置..."
+          find package/ -type f \( -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" \) 2>/dev/null | while read f; do
+            echo "    📄 发现: $f"
+            sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
+            sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
+          done
+
+          echo "  ✅ 软件源清理完成"
 
           # =========================================================
           # 关键：先用源码自带的 configs/<soc>.config 基座打底
@@ -762,7 +591,7 @@ jobs:
       # =========================================================
       # 8. diy-part2.sh —— 时区改为中国、写入固件版本后缀
       #     ★ 加密可选包就在这一步注入（diy-part2.sh 末尾 source 我们的脚本）。
-      #       必须早于步骤 9 的 make defconfig，否则内核符号写完就被
+      #       必须早于步骤 9 的 defconfig，否则内核符号写完就被
       #       defconfig 重新展开覆盖掉了。
       # =========================================================
       - name: Set timezone to China (diy-part2.sh)
@@ -784,7 +613,11 @@ jobs:
         run: |
           cd "$BUILD_ROOT/openwrt"
           WS="$GITHUB_WORKSPACE"
-          bash "$WS/scripts/patch-luci-version.sh"
+          if [ -f "$WS/scripts/patch-luci-version.sh" ]; then
+            bash "$WS/scripts/patch-luci-version.sh"
+          else
+            echo "::warning::缺 $WS/scripts/patch-luci-version.sh，跳过"
+          fi
           # 按 SoC 选择配置文件（不再硬编码 an7581）
           ./scripts/kconfig.pl + "configs/${SOC}.config" "$WS/configs/release.config" > .config
           # 按机型选择对应的配置生成脚本
@@ -795,22 +628,63 @@ jobs:
           else
             echo "ℹ 未找到 ${PROFILE} 对应的配置脚本，跳过"
           fi
+          # 通用单设备裁剪：上面 kconfig.pl 用 '>' 重新生成 .config，会冲掉
+          # Apply device profile 的裁剪，且多数机型没有 gen 脚本。这里在 defconfig
+          # 前强制再裁一次，确保只编译选定机型（PROFILE=all 时保留基座全部设备）。
+          if [ "${PROFILE}" != "all" ]; then
+            sed -i '/CONFIG_TARGET_DEVICE_/d; /^CONFIG_TARGET_MULTI_PROFILE=/d' .config
+            {
+              echo "CONFIG_TARGET_MULTI_PROFILE=y"
+              echo "CONFIG_TARGET_DEVICE_airoha_${SOC}_DEVICE_${PROFILE}=y"
+              echo "CONFIG_TARGET_DEVICE_PACKAGES_airoha_${SOC}_DEVICE_${PROFILE}=\"\""
+            } >> .config
+            echo "已裁剪为单一机型: airoha_${SOC}_DEVICE_${PROFILE}"
+          fi
           make defconfig
-          sed -i '/^CONFIG_VERSION_CODE=/d' .config 2>/dev/null || true
-          sed -i '/^# CONFIG_VERSION_CODE is not set/d' .config 2>/dev/null || true
-          echo 'CONFIG_VERSION_CODE=""' >> .config
-          echo "----- target device -----"
-          grep -E 'CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE' .config || true
-          echo "----- plugin symbols -----"
-          grep -E 'ssr-plus|passwall' .config || true
-          echo "----- version -----"
-          grep -E 'CONFIG_VERSION_CODE' .config || true
+          # 强制确保状态插件 + 全部依赖配置正确（防止被 defconfig 剔除）
+          echo "🔒 强制确保状态插件 + 全部依赖配置（defconfig 后）..."
+          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
+            sed -i "/$pkg/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
+          for pkg in firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl jsonfilter rpcd-mod-file; do
+            sed -i "/$pkg/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
+          # 强制启用 SSR Plus+
+          echo "🔒 强制启用 SSR Plus+..."
+          sed -i '/luci-app-ssr-plus/d' .config 2>/dev/null || true
+          echo "CONFIG_PACKAGE_luci-app-ssr-plus=y" >> .config
+          # 安装 SSR Plus+ 依赖的内核（避免没有内核导致反复重启）
+          echo "CONFIG_PACKAGE_xray-core=y" >> .config
+          echo "CONFIG_PACKAGE_sing-box=y" >> .config
+
+          # 固件版本隐藏已在本步骤开头由 scripts/patch-luci-version.sh 完成：
+          # 把 10_system.js 的固件版本整行（含标签）从 fields 数组删除。LuCI 版本
+          # 是运行时 RPC 动态拼接的（源码无 "LuCI Master" 字面量），文本删除无效。
+
+          # 再次隐藏 Argon 主题设置菜单
+          echo "🔒 再次隐藏 Argon 主题设置菜单..."
+          rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
+          grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+            sed -i '/argon-config/d' "$f" 2>/dev/null || true
+          done || true
+          
+          # 强制启用 IPTV 相关包
+          echo "🔒 强制启用 IPTV 相关包..."
+          for pkg in luci-app-iptv luci-i18n-iptv-zh-cn; do
+            sed -i "/$pkg/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
+          
+          # 搜索包含版本信息的文件
+          echo "🔍 搜索包含版本信息的文件..."
+          grep -rl "LuCI Master" feeds/luci --include="*.js" --include="*.htm" 2>/dev/null | head -20
+          echo "---"
+          grep -rl "luciversion" feeds/luci --include="*.js" 2>/dev/null | head -20
 
       # =========================================================
-      # 9. defconfig + 校验机型
-      #    【唯一一次 defconfig】后续不再调用，避免 .config 被重新展开、
-      #    机型配置里写死的选择被静默剔除。
-      # =========================================================
+      # 9. 预置 host 工具（Go / BPF / Python / Rust prebuilt）
       # ★ 用 runner 预装工具替代源码编译（OpenWRT-CI 核心思路）：
       #   Go external bootstrap 省 40~70 分钟、Rust prebuilt 省 30~60 分钟。
       # ⚠ 必须在 make defconfig 之前 —— 脚本写进 .config 的项要由 defconfig 展开。
@@ -838,10 +712,15 @@ jobs:
 
 
       # =========================================================
-      # 9. defconfig + 配置校验
+      # 10. defconfig + 配置校验
       #
-      #    【唯一一次 defconfig】后续步骤不再调用，避免 .config 被重新展开、
-      #    机型配置里显式写死的选择被静默剔除。
+      #    ⚠ 本步骤里 defconfig.sh 会跑一次 make defconfig（第二次，
+      #      第一次在 Configure 步骤里）。Configure 里强制追加的包可能
+      #      被这次 defconfig 重新展开冲掉（源码树里不存在的包会被静默
+      #      标为 is not set）。因此 defconfig.sh 之后必须【再追加一次】
+      #      强制配置，然后再做 MISSING / OPT_MISS 校验 —— 否则校验拿到
+      #      的是「被冲掉的 .config」，会报出指向错误方向的
+      #      「检查 feeds 是否完整」。
       #
       #    ★ 这里不再算缓存 key 了 —— key 在 2.1 就算好（提交号 + 前缀），
       #      恢复缓存在 2.2 也已经做完。缓存与 .config 彻底解耦，
@@ -865,6 +744,21 @@ jobs:
           [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
           dos2unix "$S" 2>/dev/null || true
           bash "$S" "$PWD"
+
+          # =========================================================
+          # defconfig 之后再强制追加一次（幂等，先删后加）。
+          # 原因：源码树里不存在的包会被 defconfig 静默标为 is not set，
+          # 上面 Configure 里的强制追加被这次 defconfig 冲掉了。这里补回，
+          # 保证随后 MISSING / OPT_MISS 校验看到的就是最终 .config。
+          # =========================================================
+          echo "🔒 defconfig 后补一次强制配置（幂等）..."
+          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
+                     firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl \
+                     jsonfilter rpcd-mod-file luci-app-ssr-plus xray-core sing-box \
+                     luci-app-iptv luci-i18n-iptv-zh-cn; do
+            sed -i "/CONFIG_PACKAGE_$pkg[= ]/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
 
           # =========================================================
           # 关键包校验：defconfig 会把 feeds 里不存在的包静默剔除，
@@ -909,26 +803,8 @@ jobs:
           echo "✅ 状态插件校验通过"
 
           # =========================================================
-          # 代理插件校验（只警告，不阻断）
-          #
-          #   这是「源码拉下来了、索引里有、固件里却没这个菜单」的那个坑：
-          #   ① kconfig 只认 CONFIG_PACKAGE_x=y，行首带 '#' 等于没写；
-          #   ② profile=<机型> 时只读 configs/<机型>.config，
-          #      configs/<SoC>.config 完全不参与。
-          #   两条凑一起，全程一句报错都没有。
+          # 中文包校验（po 注入后才存在，缺失只警告不阻断）
           # =========================================================
-          PROXY_MISS=""
-          for p in luci-app-passwall xray-core sing-box; do
-            grep -qx "CONFIG_PACKAGE_${p}=y" .config || PROXY_MISS="$PROXY_MISS $p"
-          done
-          if [ -n "$PROXY_MISS" ]; then
-            echo "::warning::以下插件没进 .config:$PROXY_MISS（固件里不会有，源码和索引都是好的）"
-            echo "        改 configs/${PROFILE}.config：写成 CONFIG_PACKAGE_<名>=y，行首不要带 #"
-          else
-            echo "✅ 代理插件校验通过（passwall / xray / sing-box 均为 =y）"
-          fi
-
-          # 中文包（po 注入后才存在，缺失只警告不阻断）
           if ! grep -q "^CONFIG_PACKAGE_luci-i18n-airoha-npu-zh-cn=y" .config; then
             echo "::warning::luci-i18n-airoha-npu-zh-cn 未启用（po/zh_Hans 未注入？界面将为英文）"
           fi
@@ -976,7 +852,7 @@ jobs:
           echo "CONFIG_TARGET_SUBTARGET=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)"
 
       # =========================================================
-      # 9.5 下载工具链源码 —— 只在缓存没恢复出工具链时才需要
+      # 10.5 下载工具链源码 —— 只在缓存没恢复出工具链时才需要
       #     报错 "Can't open dl/musl-1.2.6.tar.gz" 就是这一步缺失导致的：
       #     make toolchain/install 不会自动补下载，只会去解压 dl 里已有的包
       # =========================================================
@@ -1020,7 +896,7 @@ jobs:
           echo "✅ 工具链源码校验通过"
 
       # =========================================================
-      # 10. 编译工具链 —— 只在缓存没给出工具链时才动手
+      # 11. 编译工具链 —— 只在缓存没给出工具链时才动手
       #   判断依据只有一个：2.2 拿到的 cache-matched-key。命中（含前缀回退）
       #   就整段跳过，没命中才编。
       # ⚠ 别改回「按指纹是否相等」：两端算不齐就等于永远冷编译，无自愈路径。
@@ -1049,7 +925,7 @@ jobs:
           mkdir -p tmp && echo 1 > tmp/.build
 
       # =========================================================
-      # 10.02 host 侧 go / rust 从源码真实编译（prebuilt_host=false）
+      # 11.02 host 侧 go / rust 从源码真实编译（prebuilt_host=false）
       #   golang / rust 是 package 不是 tools，tools/install 与 toolchain/install
       #   都不含它们，只在 package/compile（固件那 5~6 小时）里被带出来 →
       #   ① toolchain-only 这趟建不全缓存 ② 首次多扛 1.5 小时、顶到 350 分钟上限。
@@ -1103,7 +979,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
       # =========================================================
-      # 10.05 ★ 工具链一编完就存一次（不等编译结束）
+      # 11.05 ★ 工具链一编完就存一次（不等编译结束）
       #   350 分钟一到 GitHub 直接 cancel job，排在编译后面的 Save 根本没机会跑，
       #   1~1.5 小时的工具链就白编了。
       #   代价：本次编译期间增长的 .ccache 不在这份里（下一轮补，ccache 可再生）。
@@ -1135,7 +1011,7 @@ jobs:
             ${{ env.CACHE_ROOT }}/staging_dir/tool*
 
       # =========================================================
-      # 10.1 缓存决策写进 Summary —— 命中与否一眼可见
+      # 11.1 缓存决策写进 Summary —— 命中与否一眼可见
       # =========================================================
       - name: Cache decision
         run: |
@@ -1189,8 +1065,8 @@ jobs:
           #
           # ⚠ 这里【不】跑 make defconfig：
           #   1) rules.mk 是直接解析 .config 里的 CONFIG_CCACHE，不需要 kconfig 展开；
-          #   2) 步骤 9 的注释写明「唯一一次 defconfig」，这里再跑一次会把
-          #      diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
+          #   2) 步骤 10 的注释写明「Validate 里做最后一次 defconfig」，这里再跑一次
+          #      会把 diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
           #      注释要避免的事；
           #   3) 原来那行还带 `|| true`，连失败都看不见（同 P0：管道/短路吞错）。
           sed -i '/^CONFIG_CCACHE=/d; /^# CONFIG_CCACHE is not set/d' .config
@@ -1220,16 +1096,14 @@ jobs:
       # =========================================================
       - name: SSH connection to Actions
         uses: mxschmitt/action-tmate@v3
-        # 原条件 contains(github.event.action, 'ssh') 对 workflow_dispatch 永假
-        # （event.action 恒为 "workflow_dispatch"），叠加 ref==refs/heads/main
-        # （本 workflow 在 FTTR 分支运行）后，ssh=true 从来不会触发。
+        # 调试入口默认关闭；仅当手动选择 ssh=true 且触发者为仓库所有者时才打开。
         # 保留 owner 校验：调试入口只对仓库所有者开放。
         if: >-
           github.event.inputs.ssh == 'true'
           && github.actor == github.repository_owner
 
       # =========================================================
-      # 17. 下载软件包（defconfig 已在步骤 9 执行，此处不再重复）
+      # 17. 下载软件包（defconfig 已在步骤 10 执行，此处不再重复）
       # =========================================================
       - name: Download packages
         id: package
@@ -1279,8 +1153,8 @@ jobs:
         uses: actions/cache/save@v5
         continue-on-error: true
         with:
-          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
-          path: /workdir/openwrt/dl
+          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
+          path: ${{ env.CACHE_ROOT }}/dl
 
       # =========================================================
       # 18. 编译固件
@@ -1296,7 +1170,6 @@ jobs:
           JOBS=$(awk -v p="$(nproc)" '/^MemAvailable:/{m=int($2/2097152)+1} END{print m<p?m:p}' /proc/meminfo)
           JOBS=$(( JOBS < 1 ? 1 : JOBS ))
           echo "开始编译 (${JOBS} 线程) / 机型: ${PROFILE}"
-          df -hT /
 
           if make -j"${JOBS}"; then
             echo "多线程编译成功"
@@ -1544,7 +1417,7 @@ jobs:
     needs: build
     # 只在构建成功、且确实存过缓存时才轮换
     if: ${{ needs.build.result == 'success' && needs.build.outputs.cache_key != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: ponwrt-cache-rollover-${{ github.ref }}-${{ needs.build.outputs.cache_prefix }}
       cancel-in-progress: false
