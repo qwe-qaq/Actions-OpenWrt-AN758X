@@ -260,122 +260,38 @@ if [ -f "$BANNER" ]; then
   echo "✅ banner 版本号行已清理（保留 ASCII art）"
 fi
 
-# 国内常用 apk 软件包源：默认 TUNA，首启自动测速选择最快可用镜像
-mkdir -p files/etc/apk
-cat > files/etc/apk/repositories <<'EOF'
-https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
-https://mirrors.tuna.tsinghua.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53
+# apk 软件包源：默认中科大 USTC（用户偏好，不自动检测）
+# 同时写两个路径，兼容 24.10（repositories）和 25.12+（repositories.d/distfeeds.list）
+# 写完整的 6 个源，避免缺少包
+mkdir -p files/etc/apk/repositories.d
+
+# 路径1：25.12.0+ 版本
+cat > files/etc/apk/repositories.d/distfeeds.list <<'EOF'
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/base
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/luci
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/packages
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/routing
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/telephony
 EOF
-echo "✅ apk 软件包源默认 -> TUNA snapshots"
+
+# 路径2：24.10 及更早版本（兼容旧路径）
+cat > files/etc/apk/repositories <<'EOF'
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/base
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/luci
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/packages
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/routing
+https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/telephony
+EOF
+
+echo "✅ apk 软件包源默认 -> USTC snapshots（完整 6 个源，双路径兼容）"
 
 # 后台菜单不显示“NAS”字样；USB 存储功能仍保留
 grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
   | while read -r f; do
       sed -i "s/_('NAS')/_(' ')/g; s/'NAS'/' '/g" "$f" || true
     done || true
-
-mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/99-apk-mirror-autodetect <<'EOF'
-#!/bin/sh
-# ============================================================
-# 首启自动测速选择最快的国内 ImmortalWrt apk 镜像
-# 优化点：
-#   1. 同时测试 target + main 两个路径，确保两个都可用
-#   2. 记录响应时间，选最快的，不是第一个能用的
-#   3. 等待网络就绪，避免首启时网络未通导致全不可用
-#   4. 完整日志记录，方便排查
-#   5. 全部失败时保留默认 TUNA 并记录警告
-# ============================================================
-REPOS=/etc/apk/repositories
-TARGET_PATH=snapshots/targets/airoha/an7581/packages
-PKG_PATH=snapshots/packages/aarch64_cortex-a53
-
-# 镜像列表：名称=URL
-MIRRORS="
-TUNA=https://mirrors.tuna.tsinghua.edu.cn/immortalwrt
-USTC=https://mirrors.ustc.edu.cn/immortalwrt
-Aliyun=https://mirrors.aliyun.com/immortalwrt
-"
-
-log() {
-  logger -t apk-mirror "$@"
-  echo "[apk-mirror] $@"
-}
-
-# 等待网络就绪（最多等 15 秒）
-wait_network() {
-  local i=0
-  while [ $i -lt 15 ]; do
-    if ping -c 1 -W 2 mirrors.tuna.tsinghua.edu.cn >/dev/null 2>&1; then
-      return 0
-    fi
-    i=$((i + 1))
-    sleep 1
-  done
-  return 1
-}
-
-# 测试单个镜像是否可用（target + main 都要通）
-# 返回：响应时间（秒），失败返回空
-test_mirror() {
-  local base="$1"
-  # 测试 target 包
-  local t_start=$(date +%s%N)
-  if ! curl -fsS --connect-timeout 3 --max-time 8 "$base/$TARGET_PATH/Packages" >/dev/null 2>&1; then
-    return 1
-  fi
-  # 测试主包
-  if ! curl -fsS --connect-timeout 3 --max-time 8 "$base/$PKG_PATH/Packages" >/dev/null 2>&1; then
-    return 1
-  fi
-  local t_end=$(date +%s%N)
-  local t_cost=$(( (t_end - t_start) / 1000000 ))
-  echo "$t_cost"
-  return 0
-}
-
-log "开始自动检测软件源镜像..."
-
-if ! wait_network; then
-  log "⚠ 网络未就绪，跳过镜像检测，保留默认 TUNA"
-  exit 0
-fi
-
-best_name=""
-best_url=""
-best_time=999999
-
-for entry in $MIRRORS; do
-  name="${entry%%=*}"
-  url="${entry#*=}"
-  log "测试 $name: $url"
-  cost=$(test_mirror "$url")
-  if [ -n "$cost" ]; then
-    log "  ✅ 可用，响应 ${cost}ms"
-    if [ "$cost" -lt "$best_time" ]; then
-      best_time="$cost"
-      best_name="$name"
-      best_url="$url"
-    fi
-  else
-    log "  ❌ 不可用"
-  fi
-done
-
-if [ -n "$best_name" ]; then
-  cat > "$REPOS" <<EOF2
-$best_url/$TARGET_PATH
-$best_url/$PKG_PATH
-EOF2
-  log "🎉 已切换到最快镜像: $best_name (${best_time}ms)"
-else
-  log "⚠ 所有镜像都不可用，保留默认 TUNA 配置"
-fi
-
-exit 0
-EOF
-chmod +x files/etc/uci-defaults/99-apk-mirror-autodetect
-echo "✅ 首启自动测速选择最快镜像脚本已写入（TUNA / USTC / Aliyun）"
 
 # ========== 隐藏 Argon 主题设置选项菜单（保留主题皮肤本身） ==========
 echo "🔍 隐藏 Argon 主题设置选项菜单..."
@@ -490,18 +406,6 @@ done || true
 
 echo "✅ IPTV 相关菜单位置调整完成"
 
-# WiFi 温度标签：2.4G / 5G
-# WiFi 温度标签：区分 2.4G / 5G（按出现顺序：第一个=2.4G，第二个=5G）
-echo "🔍 修改 WiFi 温度标签..."
-find package/feeds/luci -path "*temp*" -type f 2>/dev/null | while read -r f; do
-  # 只替换第一个匹配为 2.4G，第二个匹配为 5G（不加 /g，按顺序替换）
-  # 用更简单的 perl 写法，避免复杂的引号转义
-  if perl -0pi -e "s/['\"]wifi['\"]/\"2.4G WiFi\"/i; s/['\"]wifi['\"]/\"5G WiFi\"/i" "$f" 2>/dev/null; then
-    echo "✅ 已修改 WiFi 温度标签: $f"
-    break
-  fi
-done || true
-
 # ========== 全面隐藏固件版本信息（多层面） ==========
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
 # 方式一：新版 JS 组件 - 删除整行（只匹配 Firmware Version，不要求同行有其他内容）
@@ -557,8 +461,8 @@ mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/97-ssr-plus-firewall <<'EOF'
 #!/bin/sh
 # ============================================================
-# SSR Plus+ 防火墙双向支持（优化版）
-# 只在 SSR 启用时配置，通过 UCI 方式添加，不破坏原有规则
+# SSR Plus+ 防火墙双向支持（自动适配 fw3 / fw4）
+# 首启时自动检测防火墙版本，配置对应的双向规则
 # ============================================================
 
 log() {
@@ -566,36 +470,69 @@ log() {
   echo "[ssr-firewall] $@"
 }
 
-# 第一步：检测 SSR Plus+ 是否启用
-ENABLED=$(uci get shadowsocksr.@global[0].enable 2>/dev/null || echo "0")
-if [ "$ENABLED" != "1" ]; then
-  log "SSR Plus+ 未启用，跳过防火墙配置"
+# 检测防火墙版本
+if command -v fw4 >/dev/null 2>&1; then
+  FW_VER="fw4"
+  log "检测到 fw4 (nftables)"
+elif command -v fw3 >/dev/null 2>&1; then
+  FW_VER="fw3"
+  log "检测到 fw3 (iptables)"
+else
+  log "未检测到防火墙，跳过"
   exit 0
 fi
 
-# 第二步：检测 SSR 服务是否真的在运行
-if ! pgrep -f "ssr-redir\|shadowsocksr" >/dev/null 2>&1; then
-  log "SSR Plus+ 服务未运行，跳过"
-  exit 0
-fi
+# 等待 SSR Plus+ 服务启动（最多等 10 秒）
+i=0
+while [ $i -lt 10 ]; do
+  if pgrep -f "ssr-redir\|shadowsocksr" >/dev/null 2>&1; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
 
-# 第三步：通过 UCI 配置防火墙规则（不直接操作 nftables）
+# 获取 SSR Plus+ 端口（默认 1080）
 SSR_PORT=$(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo "1080")
+log "SSR Plus+ 端口: $SSR_PORT"
 
-# 添加 UCI 防火墙规则
-uci add firewall rule
-uci set firewall.@rule[-1].name='SSR Plus+ Input'
-uci set firewall.@rule[-1].src='wan'
-uci set firewall.@rule[-1].dest_port="$SSR_PORT"
-uci set firewall.@rule[-1].proto='tcp'
-uci set firewall.@rule[-1].target='ACCEPT'
-
-uci commit firewall
-log "SSR Plus+ 防火墙规则已通过 UCI 配置完成"
+# 配置双向防火墙规则
+if [ "$FW_VER" = "fw4" ]; then
+  # fw4 nftables 规则
+  # 入站：允许 SSR Plus+ 端口接收
+  nft add rule inet fw4 input tcp dport "$SSR_PORT" accept comment "SSR Plus+ input" 2>/dev/null || true
+  # 出站：允许 SSR Plus+ 进程向外连接（skuid 是 UID，不是 PID）
+  SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
+  if [ -n "$SSR_PID" ]; then
+    # 获取进程的 UID
+    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
+    if [ -n "$SSR_UID" ]; then
+      nft add rule inet fw4 output meta skuid "$SSR_UID" accept comment "SSR Plus+ output" 2>/dev/null || true
+    fi
+  fi
+  # 转发：允许代理流量转发
+  nft add rule inet fw4 forward meta comment "SSR Plus+ forward" accept 2>/dev/null || true
+  log "fw4 双向防火墙规则已配置"
+else
+  # fw3 iptables 规则
+  # 入站：允许 SSR Plus+ 端口接收
+  iptables -I INPUT -p tcp --dport "$SSR_PORT" -j ACCEPT -m comment --comment "SSR Plus+ input" 2>/dev/null || true
+  # 出站：允许 SSR Plus+ 进程向外连接（用 pidof 更可靠，兼容 busybox）
+  SSR_PID=$(pidof ssr-redir 2>/dev/null || echo "")
+  if [ -n "$SSR_PID" ]; then
+    # 获取进程的 UID
+    SSR_UID=$(cat /proc/"$SSR_PID"/status 2>/dev/null | grep "^Uid:" | awk '{print $2}')
+    if [ -n "$SSR_UID" ]; then
+      iptables -I OUTPUT -m owner --uid-owner "$SSR_UID" -j ACCEPT -m comment --comment "SSR Plus+ output" 2>/dev/null || true
+    fi
+  fi
+  # 转发：允许代理流量转发
+  iptables -I FORWARD -p tcp -m comment --comment "SSR Plus+ forward" -j ACCEPT 2>/dev/null || true
+  log "fw3 双向防火墙规则已配置"
+fi
 
 exit 0
 EOF
-
 chmod +x files/etc/uci-defaults/97-ssr-plus-firewall
 echo "✅ SSR Plus+ 双向防火墙脚本已写入（自动适配 fw3/fw4）"
 
@@ -683,6 +620,91 @@ echo "🔍 优化 DHCP 租约与匹配逻辑..."
 # 4. 自启动优化：确保 dnsmasq 正确启动
 
 mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/95-dhcp-optimize <<'EOF'
+#!/bin/sh
+# ============================================================
+# DHCP 租约与匹配逻辑优化
+# 首启时自动配置，优化家庭网络体验
+# ============================================================
+
+log() {
+  logger -t dhcp-optimize "$@"
+  echo "[dhcp-optimize] $@"
+}
+
+# 等待 network 配置就绪（最多等 10 秒）
+i=0
+while [ $i -lt 10 ]; do
+  if [ -f /etc/config/dhcp ]; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+[ -f /etc/config/dhcp ] || { log "未找到 dhcp 配置，跳过"; exit 0; }
+
+# ---- 1. dnsmasq 全局优化 ----
+log "优化 dnsmasq 全局配置..."
+
+# 增大 DNS 缓存（默认 150，改成 1000，加快重复域名解析）
+uci -q set dhcp.@dnsmasq[0].cachesize='1000'
+# 启用本地 DNS 解析（局域网主机名解析）
+uci -q set dhcp.@dnsmasq[0].localuse='1'
+# 禁用负缓存（避免解析失败的域名被缓存太久）
+uci -q set dhcp.@dnsmasq[0].no_negcache='1'
+# 启用 DNS 重绑定保护（安全）
+uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
+# 快速 DHCP（减少租约分配时间）
+uci -q set dhcp.@dnsmasq[0].fastdhcp='1'
+
+# ---- 2. DHCP 租约优化 ----
+log "优化 DHCP 租约时间..."
+
+# 遍历所有 DHCP 接口
+for cfg in $(uci -q show dhcp | grep '=dhcp$' | cut -d. -f2 | cut -d= -f1); do
+  # 默认租约时间 12 小时（家庭网络够用）
+  uci -q set dhcp.$cfg.leasetime='12h'
+  # 最小租约时间 1h（设备频繁切换网络时更快续租）
+  uci -q set dhcp.$cfg.limit='150'
+  log "  接口 $cfg: 租约 12h, 上限 150 台"
+done
+
+# ---- 3. 静态租约匹配优化 ----
+# 确保静态绑定按 MAC 精确匹配，不匹配主机名
+log "优化静态租约匹配逻辑..."
+
+# 检查是否有静态绑定
+static_count=$(uci -q show dhcp | grep -c "=host$" || echo 0)
+log "  静态绑定数量: $static_count"
+
+# ---- 4. DHCP 选项优化 ----
+# 启用 router 选项（默认网关）
+# 启用 broadcast 选项
+# 优化 NTP 选项
+# 注意：只追加不存在的选项，不删除现有配置，避免覆盖用户自定义
+if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:router"; then
+  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:router'
+fi
+if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:broadcast"; then
+  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:broadcast'
+fi
+
+# 提交配置
+uci -q commit dhcp
+log "DHCP 优化配置已提交"
+
+# 重启 dnsmasq 使配置生效
+if [ -x /etc/init.d/dnsmasq ]; then
+  /etc/init.d/dnsmasq restart >/dev/null 2>&1
+  log "dnsmasq 已重启"
+fi
+
+log "DHCP 优化完成"
+exit 0
+EOF
+chmod +x files/etc/uci-defaults/95-dhcp-optimize
+echo "✅ DHCP 租约优化脚本已写入（租约 12h + DNS 缓存 + 快速 DHCP）"
 
 # ========== 运存（内存）容量优化（不牺牲网络速度） ==========
 echo "🔍 优化运存占用（确保网络高速）..."
@@ -814,20 +836,16 @@ echo "✅ 版本隐藏 uci-defaults 脚本已写入（双重保险）"
 # 加密是可选增强，不该有能力搞挂构建。
 [ -f scripts/diy-part2-crypto.sh ] && . ./scripts/diy-part2-crypto.sh || true
 
-# 6. 强制确保状态插件 + 全部依赖配置正确（防止被意外剔除）
-echo "🔒 强制确保状态插件 + 全部依赖配置..."
+# 6. 强制确保状态插件配置正确（防止被意外剔除）
+echo "🔒 强制确保状态插件配置..."
 if [ -f ".config" ]; then
-  # 状态插件本体
   for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
+    # 先删除旧配置行
     sed -i "/$pkg/d" .config 2>/dev/null || true
+    # 强制写入 =y
     echo "CONFIG_PACKAGE_$pkg=y" >> .config || true
   done
-  # 全部依赖包（补齐缺失的依赖）
-  for pkg in firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl jsonfilter rpcd-mod-file; do
-    sed -i "/$pkg/d" .config 2>/dev/null || true
-    echo "CONFIG_PACKAGE_$pkg=y" >> .config || true
-  done
-  echo "✅ 状态插件 + 全部依赖配置已强制确保"
+  echo "✅ 状态插件配置已强制确保"
 fi
 
 echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
