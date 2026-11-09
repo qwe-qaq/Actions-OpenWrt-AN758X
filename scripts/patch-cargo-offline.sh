@@ -2,7 +2,7 @@
 # =============================================================
 # patch-cargo-offline.sh —— 放宽 rust 包的「禁止联网」限制
 #
-#   背景：h3c-fttr-tools 的 Makefile 用 cargo install --locked --frozen。
+#   背景：openwrt-fttr 的 Makefile 用 cargo install --locked --frozen。
 #   --frozen = 锁版本 + 禁止联网，只认 CARGO_HOME(dl/cargo) 里已有的 crate；
 #   而 dl/cargo 从缓存继承（只增不减），上游在 Cargo.lock 加新依赖时缓存里没有：
 #     Caused by: failed to download `core_detect v1.0.0`
