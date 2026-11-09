@@ -661,8 +661,15 @@ jobs:
           else
             echo "::warning::缺 $WS/scripts/patch-luci-version.sh，跳过"
           fi
-          # 按 SoC 选择配置文件（不再硬编码 an7581）
-          ./scripts/kconfig.pl + "configs/${SOC}.config" "$WS/configs/release.config" > .config
+
+          # ⚠ 用 >> 而非 >：Load custom configuration / Apply device profile /
+          #   diy-part2.sh 在前面已经对 .config 做了追加（机型精简配置
+          #   ${CONFIG_FILE}、TARGET_DEVICE 裁剪、zoneinfo-asia / libffi / iw /
+          #   禁用 argon-config / passwall 等）。用 > 会把这部分全部冲掉，
+          #   这是原设计里的隐藏 bug：Load custom configuration 的 cp 和 cat
+          #   在 Configure 里被完全覆盖，等于从未执行。
+          ./scripts/kconfig.pl + "configs/${SOC}.config" "$WS/configs/release.config" >> .config
+
           # 按机型选择对应的配置生成脚本
           if [ -f "$WS/scripts/gen-${PROFILE}.sh" ]; then
             bash "$WS/scripts/gen-${PROFILE}.sh"
@@ -671,9 +678,10 @@ jobs:
           else
             echo "ℹ 未找到 ${PROFILE} 对应的配置脚本，跳过"
           fi
-          # 通用单设备裁剪：上面 kconfig.pl 用 '>' 重新生成 .config，会冲掉
-          # Apply device profile 的裁剪，且多数机型没有 gen 脚本。这里在 defconfig
-          # 前强制再裁一次，确保只编译选定机型（PROFILE=all 时保留基座全部设备）。
+
+          # 通用单设备裁剪：上面 kconfig.pl 用 '>>' 追加后，.config 里可能有
+          # 来自 SoC 基座的 TARGET_DEVICE 项（is not set），也可能有 diy-part2.sh
+          # 之前追加的项。这里清掉后重新追加目标机型，保证只编译选定机型。
           if [ "${PROFILE}" != "all" ]; then
             sed -i '/CONFIG_TARGET_DEVICE_/d; /^CONFIG_TARGET_MULTI_PROFILE=/d' .config
             {
@@ -683,7 +691,21 @@ jobs:
             } >> .config
             echo "已裁剪为单一机型: airoha_${SOC}_DEVICE_${PROFILE}"
           fi
+
           make defconfig
+
+          # ⚠ 安全网：make defconfig 会把 .config 重新展开。如果
+          #   configs/${SOC}.config 里包含 `# CONFIG_PACKAGE_xxx is not set`，
+          #   就会覆盖 diy-part2.sh 的追加（zoneinfo-asia / libffi / iw）。
+          #   这里检测并重新追加，确保用户定制不被吞。
+          for pkg in zoneinfo-asia libffi iw; do
+            if ! grep -q "^CONFIG_PACKAGE_${pkg}=y" .config; then
+              sed -i "/^CONFIG_PACKAGE_${pkg}[= ]/d; /^# CONFIG_PACKAGE_${pkg} is not set/d" .config
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+              echo "🔒 已重新强制启用 ${pkg}（diy-part2.sh 的设置被 defconfig 覆盖）"
+            fi
+          done
+
           # 强制确保状态插件 + 全部依赖配置正确（防止被 defconfig 剔除）
           echo "🔒 强制确保状态插件 + 全部依赖配置（defconfig 后）..."
           for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
