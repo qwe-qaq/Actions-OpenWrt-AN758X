@@ -231,6 +231,11 @@ fi
 #   files/sbin/cpuusage，前端 10_system.js 与 ACL 都不动。
 #   纯显示层：找不到目标只 warning，不让它把几小时的构建搞挂。
 # ---------------------------------------------------------
+
+# 确保 sbin 脚本有执行权限
+[ -f files/sbin/cpuusage ] && chmod +x files/sbin/cpuusage
+[ -f files/sbin/tempinfo ] && chmod +x files/sbin/tempinfo
+
 PATCH_CPUUSAGE="$(dirname "$0")/scripts/patch-luci-cpuusage.sh"
 if [ -f "$PATCH_CPUUSAGE" ]; then
   PONWRT_DIR=. bash "$PATCH_CPUUSAGE" || true
