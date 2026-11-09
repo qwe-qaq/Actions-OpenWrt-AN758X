@@ -158,6 +158,8 @@ jobs:
     env:
       SOC: ${{ matrix.soc }}
       # 由矩阵决定，一次运行可以同时跑 prebuilt 和 source 两条缓存线。
+      # ⚠ HOST_MODE 会进缓存 key 前缀（见 pwrt-cache.sh），必须是 ASCII
+      #   prebuilt / source；中文选项在 prepare 里映射成这两个值。
       # job 级 env 优先级高于 workflow 级，所以不必再在顶层重复声明。
       HOST_MODE: ${{ matrix.host_mode }}
       PREBUILT_HOST: ${{ matrix.host_mode == 'prebuilt' && 'true' || 'false' }}
@@ -314,6 +316,12 @@ jobs:
           ./scripts/feeds install -a
 
       - name: Pull optional plugins (diy-part1.sh)
+        # ⚠ warm-cache 只把 staging_dir/host* + tool* + .ccache 打进缓存，
+        #   与 luci 包无关。所以 diy-part1.sh 里的 luci 拉取失败不影响本 job。
+        #   但仍然要继续往下跑 —— 因为 diy-part1.sh 末尾会跑 make
+        #   prepare-tmpinfo 生成 tmp/.packageinfo，后续 make defconfig
+        #   需要它来解析 .config 里的 CONFIG_PACKAGE_* 符号（缺了会有
+        #   "unrecognized symbol" 类警告，虽然不致命但会污染日志）。
         continue-on-error: true
         run: |
           cd "$CACHE_ROOT"
@@ -425,18 +433,21 @@ jobs:
       # =========================================================
       - name: Build host go/rust from source
         id: host-src
+        timeout-minutes: 200
         if: >-
           env.PREBUILT_HOST != 'true'
           && (env.IGNORE_CACHE == 'true'
               || (steps.cache-restore.outputs.cache-matched-key == ''
                   && steps.release-restore.outputs.restored != 'true'))
-        timeout-minutes: 200
         run: |
           cd "$CACHE_ROOT"
           JOBS=$(nproc)
           for p in golang-bootstrap golang rust; do
             rel=$(find -L package -maxdepth 4 -type d -name "$p" 2>/dev/null | head -1)
-            [ -z "$rel" ] && { echo "::warning::树里没有 $p，跳过"; continue; }
+            if [ -z "$rel" ]; then
+              echo "::warning::树里没有 $p，跳过"
+              continue
+            fi
             echo "===== make $rel/host/compile ====="
             make "$rel/download" >/dev/null 2>&1 || true
             make "$rel/host/compile" -j"$JOBS" || make "$rel/host/compile" -j1 V=s || \
@@ -579,8 +590,15 @@ jobs:
         run: |
           S="$GITHUB_WORKSPACE/scripts/pwrt-cache.sh"
           dos2unix "$S" 2>/dev/null || true
-          # 只给前缀，不给 KEY：脚本会保留「创建时间最新」的那一代
-          PREFIX=$(bash "$S" prefix | sed -n 's/^prefix=//p' | head -1)
+          # 只给前缀，不给 KEY：脚本会保留「创建时间最新」的那一代。
+          # ⚠ 把原始输出抓到 PREFIX_OUT：算不出前缀时打出来，避免
+          #   只看到一句 "算不出前缀，跳过" 却不知道 pwrt-cache.sh 报了什么。
+          PREFIX_OUT=$(bash "$S" prefix 2>&1) || true
+          PREFIX=$(printf '%s\n' "$PREFIX_OUT" | sed -n 's/^prefix=//p' | head -1)
           echo "PREFIX=$PREFIX"
-          [ -n "$PREFIX" ] || { echo "::warning::算不出前缀，跳过"; exit 0; }
+          if [ -z "$PREFIX" ]; then
+            echo "::warning::算不出前缀，跳过。pwrt-cache.sh 原始输出："
+            printf '%s\n' "$PREFIX_OUT"
+            exit 0
+          fi
           PREFIX="$PREFIX" KEY='' bash "$S" rollover
