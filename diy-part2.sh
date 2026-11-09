@@ -18,14 +18,14 @@ echo "=========================================="
 # 如需改动，直接改这里即可（编译期常量，会写进 uci-defaults 脚本）
 # =============================================================
 # 2.4G WiFi 参数
-WIFI_24G_COUNTRY="${WIFI_24G_COUNTRY:-CN}"    # 国家代码（CN = 中国）
-WIFI_24G_CHANNEL="${WIFI_24G_CHANNEL:-auto}"    # 信道（auto = 自动选择）
+WIFI_24G_COUNTRY="${WIFI_24G_COUNTRY:-CN}"
+WIFI_24G_CHANNEL="${WIFI_24G_CHANNEL:-auto}"
 
 # 5G WiFi 参数
-WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"       # 国家代码（CN = 中国）
-WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"     # 信道（auto = 自动选择）
-WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"      # 160MHz（WiFi6）；回落 HE80
-WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"   # 硬件不支持 160MHz 时的回落值
+WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"
+WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"
+WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"
+WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"
 
 # 可由 workflow 的 fw_author 输入项覆盖（经 env 注入）；本地单独跑时默认 qwe
 FW_AUTHOR="${FW_AUTHOR:-qwe}"
@@ -42,7 +42,6 @@ echo "配置：FW_AUTHOR=$FW_AUTHOR"
 CFG="package/base-files/files/bin/config_generate"
 
 if [ -f "$CFG" ]; then
-  # 兼容 @system[-1]（旧）与 @system[0]（OpenWrt 21+）
   sed -i "s/option timezone.*/option timezone 'CST-8'/" "$CFG"
   sed -i "s/option zonename.*/option zonename 'Asia\/Shanghai'/" "$CFG"
   echo "✅ config_generate 默认时区 -> CST-8 / Asia/Shanghai"
@@ -67,15 +66,17 @@ chmod +x files/etc/uci-defaults/99-timezone-cn
 echo "✅ uci-defaults 时区脚本已写入"
 
 # ---------------------------------------------------------
-# 3. 补上亚洲时区数据库包（LuCI 显示与时区切换需要）
+# 3. 补上亚洲时区数据库包 + libffi（python3 _ctypes 需要）
+#   ⚠ 这里写入 .config 的项会被 workflow 的 Configure 步骤用 >> 追加、
+#     make defconfig 展开后保留。Configure 里还有一道安全网重新启用
+#     zoneinfo-asia / libffi / iw，防止 configs/${SOC}.config 里
+#     的 `is not set` 覆盖这里的设置。
 # ---------------------------------------------------------
 if [ -f .config ]; then
   sed -i '/^CONFIG_PACKAGE_zoneinfo-asia=/d; /^# CONFIG_PACKAGE_zoneinfo-asia is not set/d' .config
   echo "CONFIG_PACKAGE_zoneinfo-asia=y    # 亚洲时区数据库（中国时区需要）" >> .config
   echo "✅ zoneinfo-asia 已加入 .config"
 
-  # libffi：源码树原本没有这个包，python3(3.14) 的 _ctypes 却必须要它的
-  # ffi.h / libffi.pc，缺了就 fatal error 拖垮 world。这里显式打开 target 版。
   sed -i '/^CONFIG_PACKAGE_libffi=/d; /^# CONFIG_PACKAGE_libffi is not set/d' .config
   echo "CONFIG_PACKAGE_libffi=y           # python3 _ctypes 需要 ffi.h / libffi.pc" >> .config
   echo "✅ libffi 已加入 .config"
@@ -109,11 +110,8 @@ cat > files/etc/uci-defaults/96-wifi-5g-cn <<UCEOF
 # 无线 WiFi 默认值：2.4G/5G 国家码 CN、5G 信道 auto、频宽 160MHz
 # 由 diy-part2.sh 生成（编译期常量注入）
 
-# 2.4G 国家码和信道
 COUNTRY_24G='$WIFI_24G_COUNTRY'
 CHANNEL_24G='$WIFI_24G_CHANNEL'
-
-# 5G 参数
 COUNTRY='$WIFI_5G_COUNTRY'
 CHANNEL='$WIFI_5G_CHANNEL'
 HTMODE='$WIFI_5G_HTMODE'
@@ -121,18 +119,15 @@ FALLBACK='$WIFI_5G_FALLBACK'
 
 log() { logger -t wifi-config "\$@"; }
 
-# uci-defaults 可能在 wifi config 之前执行 —— 没生成就先生成
 if [ ! -f /etc/config/wireless ]; then
 	command -v wifi >/dev/null 2>&1 && wifi config >/dev/null 2>&1
 fi
 [ -f /etc/config/wireless ] || { log "未找到 /etc/config/wireless，跳过"; exit 0; }
 
-# 检测该 phy 是否支持 160MHz
 support_160() {
 	local phy="\$1"
 	[ -z "\$phy" ] && return 1
 	command -v iw >/dev/null 2>&1 || return 1
-	# 用 [.] 不用 [+]，避免 ERE 中 "+" 量词的歧义
 	iw phy "\$phy" info 2>/dev/null | grep -qE '160 MHz|80[+]80 MHz' || return 1
 	return 0
 }
@@ -141,7 +136,6 @@ changed=0
 for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wifi-device\$/\1/p'); do
 	band="\$(uci -q get wireless.\$dev.band 2>/dev/null)"
 	hwmode="\$(uci -q get wireless.\$dev.hwmode 2>/dev/null)"
-
 	is5g=0
 	[ "\$band" = "5g" ] && is5g=1
 	[ -z "\$band" ] && [ "\$hwmode" = "11a" ] && is5g=1
@@ -167,7 +161,6 @@ for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wif
 	changed=1
 done
 
-# 默认无线名称：2.4G = TP-LINK_6628，5G = TP-LINK_6628_5G
 for iface in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wifi-iface\$/\1/p'); do
 	dev="\$(uci -q get wireless.\$iface.device 2>/dev/null)"
 	band="\$(uci -q get wireless.\$dev.band 2>/dev/null)"
@@ -194,7 +187,7 @@ fi
 exit 0
 UCEOF
 chmod +x files/etc/uci-defaults/96-wifi-5g-cn
-echo "✅ uci-defaults WiFi 脚本已写入（2.4G country=$WIFI_24G_COUNTRY channel=$WIFI_24G_CHANNEL，5G country=$WIFI_5G_COUNTRY channel=$WIFI_5G_CHANNEL htmode=$WIFI_5G_HTMODE）"
+echo "✅ uci-defaults WiFi 脚本已写入"
 
 # ---- 4c. 确保 hostapd 支持 160MHz / 11ax ----
 if [ -f .config ]; then
@@ -211,14 +204,9 @@ fi
 # ---------------------------------------------------------
 # 5. 概览页「CPU 使用率（%）」行：USR/SYS + 每核明细
 # ---------------------------------------------------------
-
-# 确保 sbin 脚本有执行权限（用 if，避免在 set -e 下成为最后一条命令时退出）
 if [ -f files/sbin/cpuusage ]; then chmod +x files/sbin/cpuusage; fi
 if [ -f files/sbin/tempinfo ]; then chmod +x files/sbin/tempinfo; fi
 
-# ⚠ $0 是 $GITHUB_WORKSPACE/diy-part2.sh，dirname 是 $GITHUB_WORKSPACE，
-#   这正是 patch-luci-cpuusage.sh 的位置。如果脚本被复制到别处运行，
-#   $0 可能是相对路径，这时优先用 $GITHUB_WORKSPACE。
 SCRIPT_DIR="${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")" && pwd)}"
 PATCH_CPUUSAGE="$SCRIPT_DIR/scripts/patch-luci-cpuusage.sh"
 if [ -f "$PATCH_CPUUSAGE" ]; then
@@ -230,7 +218,6 @@ fi
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
 
 # ========== 全面隐藏固件版本信息 ==========
-# 方式一：直接清空模板文件中的版本字段（编译期）
 RELEASE_TPL="package/base-files/files/etc/openwrt_release"
 OSREL_TPL="package/base-files/files/usr/lib/os-release"
 
@@ -252,15 +239,13 @@ if [ -f "package/base-files/files/etc/openwrt_version" ]; then
   echo "✅ openwrt_version 已清空"
 fi
 
-# 方式二：修改 banner，只删除末尾版本号行，保留 ASCII art
 BANNER="package/base-files/files/etc/banner"
 if [ -f "$BANNER" ]; then
   sed -i "/SNAPSHOT r[0-9]/d; /OpenWrt [0-9]/d; /ImmortalWrt [0-9]/d; /PonWrt SNAPSHOT/d" "$BANNER" || true
   echo "✅ banner 版本号行已清理（保留 ASCII art）"
 fi
 
-# apk 软件包源：默认中科大 USTC（用户偏好，不自动检测）
-# 同时写两个路径，兼容 24.10（repositories）和 25.12+（repositories.d/distfeeds.list）
+# apk 软件包源：默认中科大 USTC，双路径兼容
 mkdir -p files/etc/apk/repositories.d
 
 cat > files/etc/apk/repositories.d/distfeeds.list <<'EOF'
@@ -283,22 +268,17 @@ EOF
 
 echo "✅ apk 软件包源默认 -> USTC snapshots（完整 6 个源，双路径兼容）"
 
-# 后台菜单不显示“NAS”字样；USB 存储功能仍保留
-# ⚠ package/feeds 下全是符号链接，grep -r 不跟随，此段实际无效。
-#   保留作为「某些 OpenWrt 版本把 package/feeds 做成真实目录」的兼容垫片。
+# 后台菜单不显示"NAS"字样（package/feeds 下是符号链接，grep -r 不跟随，保留作为兼容垫片）
 grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
-  | while read -r f; do
+  | while IFS= read -r f; do
       sed -i "s/_('NAS')/_(' ')/g; s/'NAS'/' '/g" "$f" || true
     done || true
 
 # ========== 隐藏 Argon 主题设置选项菜单（保留主题皮肤本身） ==========
 echo "🔍 隐藏 Argon 主题设置选项菜单..."
-# 1. 删除 argon-config 符号链接（package/feeds 下的符号链接，rm 直接删链接本身，有效）
 rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
 
-# 2. 从菜单 JSON 里删除 argon-config 条目
 # ⚠ package/feeds/luci 下全是符号链接，grep -r 不跟随。改用 feeds/luci（真实目录）。
-#   workflow 的 Configure 步骤也有同样的清理，这里保留作为本地单独跑的兜底。
 grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while IFS= read -r f; do
   if python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
     python3 -c "
@@ -329,13 +309,12 @@ with open('$f', 'w') as fp:
   fi
 done || true
 
-# 3. 删除 LuCI 菜单里的 argon-config 菜单项（feeds/luci 真实路径）
 grep -rl "argon-config" feeds/luci --include="*.js" --include="*.lua" 2>/dev/null | while IFS= read -r f; do
   sed -i "/argon-config/d; /Argon 配置/d" "$f" || true
 done || true
 echo "✅ Argon 主题设置选项菜单已隐藏（主题皮肤保留）"
 
-# 4. 强制在 .config 里禁用 argon-config（加固）
+# 强制禁用 argon-config（加固）
 echo "🔒 强制禁用 argon-config 包..."
 if [ -f ".config" ]; then
   sed -i '/luci-app-argon-config/d' .config 2>/dev/null || true
@@ -343,7 +322,7 @@ if [ -f ".config" ]; then
   echo "✅ .config 已强制禁用 argon-config"
 fi
 
-# 5. 强制禁用 passwall 系列（加固）
+# 强制禁用 passwall 系列
 # ⚠ xray-core / sing-box 不在此列表：workflow 的 Configure 步骤明确
 #   追加 CONFIG_PACKAGE_xray-core=y / sing-box=y（SSR Plus+ 后端），
 #   这里再禁用会被 workflow 覆盖，属于自相矛盾的死代码。
@@ -356,10 +335,7 @@ if [ -f ".config" ]; then
   echo "✅ .config 已强制禁用 passwall 系列包"
 fi
 
-# 6. 修复 ssr-plus 依赖 kcptun-client 缺失问题（helloworld feed 已移除 kcptun）
-# ⚠ package/feeds/helloworld 是指向 feeds/helloworld 的符号链接；
-#   sed 会解引用到目标文件，实际修改 feeds/helloworld/luci-app-ssr-plus/Makefile。
-#   workflow 步骤 4 之后不再 feeds update，所以修改有效。
+# 修复 ssr-plus 依赖 kcptun-client 缺失问题
 echo "🔧 修复 ssr-plus 依赖 kcptun-client 缺失..."
 SSR_MAKEFILE="package/feeds/helloworld/luci-app-ssr-plus/Makefile"
 if [ -f "$SSR_MAKEFILE" ]; then
@@ -368,9 +344,9 @@ if [ -f "$SSR_MAKEFILE" ]; then
 fi
 
 # ========== IPTV 相关菜单统一移到「网络」菜单下 ==========
-echo "🔍 调整 IPTV 相关菜单位置..."
 # ⚠ 原代码用 package/feeds/luci（符号链接目录，grep -r 不跟随），实际无效。
 #   改用 feeds/luci（真实源码目录），清理才会生效。
+echo "🔍 调整 IPTV 相关菜单位置..."
 IPTV_MENU_PACKAGES="igmpproxy rtp2httpd"
 for pkg in $IPTV_MENU_PACKAGES; do
   grep -rl "$pkg" feeds/luci --include="*.json" 2>/dev/null | while IFS= read -r f; do
@@ -382,7 +358,6 @@ for pkg in $IPTV_MENU_PACKAGES; do
   done || true
 done || true
 
-# 兜底：直接找所有包含 igmpproxy / rtp2httpd 的菜单文件
 grep -rl "igmpproxy\|rtp2httpd" feeds/luci --include="*.json" 2>/dev/null | while IFS= read -r f; do
   if grep -q '"parent"' "$f" 2>/dev/null; then
     old_parent=$(grep -o '"parent":\s*"[^"]*"' "$f" 2>/dev/null | head -1 | sed 's/.*"parent":\s*"//;s/"//' || echo "unknown")
@@ -465,7 +440,6 @@ else
   exit 0
 fi
 
-# 等待 SSR Plus+ 服务启动（最多等 10 秒）
 i=0
 while [ $i -lt 10 ]; do
   if pgrep -f "ssr-redir\|shadowsocksr" >/dev/null 2>&1; then
@@ -478,7 +452,6 @@ done
 SSR_PORT=$(uci get shadowsocksr.@global[0].main_port 2>/dev/null || echo "1080")
 log "SSR Plus+ 端口: $SSR_PORT"
 
-# 取 SSR 进程的 UID（多 PID 时只取第一个）
 SSR_UID=""
 SSR_PIDS=$(pidof ssr-redir 2>/dev/null || echo "")
 if [ -n "$SSR_PIDS" ]; then
@@ -519,10 +492,6 @@ echo "✅ EIP93 驱动模块加载配置已写入"
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/90-eip93-npu-optimize <<'EOF'
 #!/bin/sh
-# ============================================================
-# EIP93 NPU 硬件加密优化脚本（最早执行，确保内核模块加载）
-# ============================================================
-
 log() {
   logger -t eip93-npu "$@"
   echo "[eip93-npu] $@"
@@ -569,17 +538,13 @@ log "EIP93 NPU 优化完成"
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/90-eip93-npu-optimize
-echo "✅ EIP93 NPU 优化脚本已写入（编号 90，最早执行）"
+echo "✅ EIP93 NPU 优化脚本已写入"
 
 # ========== DHCP 租约与匹配逻辑优化 ==========
 echo "🔍 优化 DHCP 租约与匹配逻辑..."
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/95-dhcp-optimize <<'EOF'
 #!/bin/sh
-# ============================================================
-# DHCP 租约与匹配逻辑优化
-# ============================================================
-
 log() {
   logger -t dhcp-optimize "$@"
   echo "[dhcp-optimize] $@"
@@ -632,17 +597,13 @@ log "DHCP 优化完成"
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/95-dhcp-optimize
-echo "✅ DHCP 租约优化脚本已写入（租约 12h + DNS 缓存 + 快速 DHCP）"
+echo "✅ DHCP 租约优化脚本已写入"
 
 # ========== 运存（内存）容量优化（不牺牲网络速度） ==========
 echo "🔍 优化运存占用（确保网络高速）..."
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/93-memory-optimize <<'EOF'
 #!/bin/sh
-# ============================================================
-# 运存（内存）容量优化（不牺牲网络速度）
-# ============================================================
-
 log() {
   logger -t mem-optimize "$@"
   echo "[mem-optimize] $@"
@@ -677,7 +638,7 @@ log "运存优化完成（网络性能优先）"
 exit 0
 EOF
 chmod +x files/etc/uci-defaults/93-memory-optimize
-echo "✅ 运存优化脚本已写入（不牺牲网络速度，只优化日志和内核参数）"
+echo "✅ 运存优化脚本已写入（不牺牲网络速度）"
 
 # ========== 首启清空版本信息（双重保险） ==========
 cat > files/etc/uci-defaults/98-hide-version <<'EOF'
@@ -732,17 +693,19 @@ EOF
 chmod +x files/etc/uci-defaults/98-hide-version
 echo "✅ 版本隐藏 uci-defaults 脚本已写入（双重保险）"
 
-# 加密脚本：用 subshell 把 set -u 崩溃隔离在子进程，主脚本不受影响。
+# 加密脚本：用 $GITHUB_WORKSPACE 绝对路径 —— cwd 是 openwrt 源码树，
+# 相对路径会指向 $BUILD_ROOT/openwrt/scripts/，找不到用户自备的脚本。
+# 用 subshell 把 set -u 崩溃隔离在子进程，主脚本不受影响。
 # 末尾 || true：本文件开头 set -euo pipefail，source 的子脚本里任何
 # 步骤返回非 0 都会让这里当场退出。加密是可选增强，不该搞挂构建。
-if [ -f scripts/diy-part2-crypto.sh ]; then
-  ( . ./scripts/diy-part2-crypto.sh ) || true
+_crypto_sh="${GITHUB_WORKSPACE:-$(dirname "$0")}/scripts/diy-part2-crypto.sh"
+if [ -f "$_crypto_sh" ]; then
+  ( . "$_crypto_sh" ) || true
 fi
 
 # 7. 强制确保状态插件配置正确（防止被意外剔除）
-# ⚠ 用精确锚定 /^CONFIG_PACKAGE_$pkg[= ]/d，避免误删包含子串的注释行
-#   （如 luci-app-airoha-npu-XXXX）。workflow 的 Validate 步骤也做了同样的强制，
-#   这里作为本地单独跑时的兜底。
+# ⚠ 用精确锚定 /^CONFIG_PACKAGE_$pkg[= ]/d，避免误删包含子串的注释行。
+#   workflow 的 Validate 步骤也做了同样的强制，这里作为本地单独跑时的兜底。
 echo "🔒 强制确保状态插件配置..."
 if [ -f ".config" ]; then
   for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode; do
