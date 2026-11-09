@@ -112,7 +112,7 @@ on:
           - toolchain-only
       ignore_cache:
         description: '忽略构建缓存强制重编（跳过一次恢复，仍会存新一代）'
-        required: false
+        required: true
         default: 'false'
         type: choice
         options:
@@ -415,11 +415,6 @@ jobs:
               || steps.release-restore.outputs.restored == 'true')
         env:
           RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
-          # 精确 = 「这份缓存就是当前这个提交编出来的」。两条通道都算：
-          #   actions/cache  cache-hit=true（key 完全相等）
-          #   Release 备份   资产名去掉 .tzst 后 == 本次 key
-          # 前缀回退 / Release 取到旧代都不算，源码比缓存新，必须让 make 重编。
-          CACHE_EXACT: ${{ (steps.cache-restore.outputs.cache-hit == 'true' || (steps.release-restore.outputs.restored_key != '' && steps.release-restore.outputs.restored_key == steps.cache-key.outputs.key)) && 'true' || 'false' }}
         run: |
           cd "$CACHE_ROOT"
           echo "来源: $RESTORED_FROM"
@@ -440,19 +435,19 @@ jobs:
         uses: actions/cache/restore@v5
         continue-on-error: true
         with:
-          path: /workdir/openwrt/dl
+          path: ${{ env.CACHE_ROOT }}/dl
           # 按分支 + 周号：同一周内复用同一条目。
           # 原先用 github.run_number → 每次运行都 save 一份新副本，
           # 10GB 配额会被迅速刷满并淘汰掉有用的旧缓存。
           # ⚠ 用 SOURCE_SLUG（`pbs05/ponwrt` → `pbs05-ponwrt`），别用 SOURCE：
           #   key 里带 `/` 本身能存，但与工具链 key 的写法不一致，后续按前缀
           #   批量操作会漏掉这一条。
-          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
+          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
           # 第二条是旧格式（SOURCE 原值，带斜杠）：只为平滑迁移，本轮拿到本周
           # 那份 1.2 GB 后会按新格式存一份，旧的 7 天无访问自动回收。下版可删。
           restore-keys: |
-            ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-
-            ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'master' }}-
+            ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-
+            ponwrt-dl-${{ env.SOURCE }}-${{ env.REPO_BRANCH }}-
 
       # =========================================================
       # 4. 更新并安装 Feeds
@@ -538,7 +533,7 @@ jobs:
 
           # 3. 扫描所有 package 里的 opkg/apk 配置
           echo "  🔍 扫描其他 package 里的配置..."
-          find package/ -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" 2>/dev/null | while read f; do
+          find package/ -type f \( -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" \) 2>/dev/null | while read f; do
             echo "    📄 发现: $f"
             sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
             sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
@@ -596,7 +591,7 @@ jobs:
       # =========================================================
       # 8. diy-part2.sh —— 时区改为中国、写入固件版本后缀
       #     ★ 加密可选包就在这一步注入（diy-part2.sh 末尾 source 我们的脚本）。
-      #       必须早于步骤 9 的 make defconfig，否则内核符号写完就被
+      #       必须早于步骤 9 的 defconfig，否则内核符号写完就被
       #       defconfig 重新展开覆盖掉了。
       # =========================================================
       - name: Set timezone to China (diy-part2.sh)
@@ -618,7 +613,11 @@ jobs:
         run: |
           cd "$BUILD_ROOT/openwrt"
           WS="$GITHUB_WORKSPACE"
-          bash "$WS/scripts/patch-luci-version.sh"
+          if [ -f "$WS/scripts/patch-luci-version.sh" ]; then
+            bash "$WS/scripts/patch-luci-version.sh"
+          else
+            echo "::warning::缺 $WS/scripts/patch-luci-version.sh，跳过"
+          fi
           # 按 SoC 选择配置文件（不再硬编码 an7581）
           ./scripts/kconfig.pl + "configs/${SOC}.config" "$WS/configs/release.config" > .config
           # 按机型选择对应的配置生成脚本
@@ -685,10 +684,7 @@ jobs:
           grep -rl "luciversion" feeds/luci --include="*.js" 2>/dev/null | head -20
 
       # =========================================================
-      # 9. defconfig + 校验机型
-      #    【唯一一次 defconfig】后续不再调用，避免 .config 被重新展开、
-      #    机型配置里写死的选择被静默剔除。
-      # =========================================================
+      # 9. 预置 host 工具（Go / BPF / Python / Rust prebuilt）
       # ★ 用 runner 预装工具替代源码编译（OpenWRT-CI 核心思路）：
       #   Go external bootstrap 省 40~70 分钟、Rust prebuilt 省 30~60 分钟。
       # ⚠ 必须在 make defconfig 之前 —— 脚本写进 .config 的项要由 defconfig 展开。
@@ -716,10 +712,15 @@ jobs:
 
 
       # =========================================================
-      # 9. defconfig + 配置校验
+      # 10. defconfig + 配置校验
       #
-      #    【唯一一次 defconfig】后续步骤不再调用，避免 .config 被重新展开、
-      #    机型配置里显式写死的选择被静默剔除。
+      #    ⚠ 本步骤里 defconfig.sh 会跑一次 make defconfig（第二次，
+      #      第一次在 Configure 步骤里）。Configure 里强制追加的包可能
+      #      被这次 defconfig 重新展开冲掉（源码树里不存在的包会被静默
+      #      标为 is not set）。因此 defconfig.sh 之后必须【再追加一次】
+      #      强制配置，然后再做 MISSING / OPT_MISS 校验 —— 否则校验拿到
+      #      的是「被冲掉的 .config」，会报出指向错误方向的
+      #      「检查 feeds 是否完整」。
       #
       #    ★ 这里不再算缓存 key 了 —— key 在 2.1 就算好（提交号 + 前缀），
       #      恢复缓存在 2.2 也已经做完。缓存与 .config 彻底解耦，
@@ -743,6 +744,21 @@ jobs:
           [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
           dos2unix "$S" 2>/dev/null || true
           bash "$S" "$PWD"
+
+          # =========================================================
+          # defconfig 之后再强制追加一次（幂等，先删后加）。
+          # 原因：源码树里不存在的包会被 defconfig 静默标为 is not set，
+          # 上面 Configure 里的强制追加被这次 defconfig 冲掉了。这里补回，
+          # 保证随后 MISSING / OPT_MISS 校验看到的就是最终 .config。
+          # =========================================================
+          echo "🔒 defconfig 后补一次强制配置（幂等）..."
+          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
+                     firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl \
+                     jsonfilter rpcd-mod-file luci-app-ssr-plus xray-core sing-box \
+                     luci-app-iptv luci-i18n-iptv-zh-cn; do
+            sed -i "/CONFIG_PACKAGE_$pkg[= ]/d" .config 2>/dev/null || true
+            echo "CONFIG_PACKAGE_$pkg=y" >> .config
+          done
 
           # =========================================================
           # 关键包校验：defconfig 会把 feeds 里不存在的包静默剔除，
@@ -787,16 +803,8 @@ jobs:
           echo "✅ 状态插件校验通过"
 
           # =========================================================
-          # 代理插件校验（只警告，不阻断）
-          #
-          #   这是「源码拉下来了、索引里有、固件里却没这个菜单」的那个坑：
-          #   ① kconfig 只认 CONFIG_PACKAGE_x=y，行首带 '#' 等于没写；
-          #   ② profile=<机型> 时只读 configs/<机型>.config，
-          #      configs/<SoC>.config 完全不参与。
-          #   两条凑一起，全程一句报错都没有。
+          # 中文包校验（po 注入后才存在，缺失只警告不阻断）
           # =========================================================
-
-          # 中文包（po 注入后才存在，缺失只警告不阻断）
           if ! grep -q "^CONFIG_PACKAGE_luci-i18n-airoha-npu-zh-cn=y" .config; then
             echo "::warning::luci-i18n-airoha-npu-zh-cn 未启用（po/zh_Hans 未注入？界面将为英文）"
           fi
@@ -844,7 +852,7 @@ jobs:
           echo "CONFIG_TARGET_SUBTARGET=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)"
 
       # =========================================================
-      # 9.5 下载工具链源码 —— 只在缓存没恢复出工具链时才需要
+      # 10.5 下载工具链源码 —— 只在缓存没恢复出工具链时才需要
       #     报错 "Can't open dl/musl-1.2.6.tar.gz" 就是这一步缺失导致的：
       #     make toolchain/install 不会自动补下载，只会去解压 dl 里已有的包
       # =========================================================
@@ -888,7 +896,7 @@ jobs:
           echo "✅ 工具链源码校验通过"
 
       # =========================================================
-      # 10. 编译工具链 —— 只在缓存没给出工具链时才动手
+      # 11. 编译工具链 —— 只在缓存没给出工具链时才动手
       #   判断依据只有一个：2.2 拿到的 cache-matched-key。命中（含前缀回退）
       #   就整段跳过，没命中才编。
       # ⚠ 别改回「按指纹是否相等」：两端算不齐就等于永远冷编译，无自愈路径。
@@ -917,7 +925,7 @@ jobs:
           mkdir -p tmp && echo 1 > tmp/.build
 
       # =========================================================
-      # 10.02 host 侧 go / rust 从源码真实编译（prebuilt_host=false）
+      # 11.02 host 侧 go / rust 从源码真实编译（prebuilt_host=false）
       #   golang / rust 是 package 不是 tools，tools/install 与 toolchain/install
       #   都不含它们，只在 package/compile（固件那 5~6 小时）里被带出来 →
       #   ① toolchain-only 这趟建不全缓存 ② 首次多扛 1.5 小时、顶到 350 分钟上限。
@@ -971,7 +979,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
       # =========================================================
-      # 10.05 ★ 工具链一编完就存一次（不等编译结束）
+      # 11.05 ★ 工具链一编完就存一次（不等编译结束）
       #   350 分钟一到 GitHub 直接 cancel job，排在编译后面的 Save 根本没机会跑，
       #   1~1.5 小时的工具链就白编了。
       #   代价：本次编译期间增长的 .ccache 不在这份里（下一轮补，ccache 可再生）。
@@ -1003,7 +1011,7 @@ jobs:
             ${{ env.CACHE_ROOT }}/staging_dir/tool*
 
       # =========================================================
-      # 10.1 缓存决策写进 Summary —— 命中与否一眼可见
+      # 11.1 缓存决策写进 Summary —— 命中与否一眼可见
       # =========================================================
       - name: Cache decision
         run: |
@@ -1057,8 +1065,8 @@ jobs:
           #
           # ⚠ 这里【不】跑 make defconfig：
           #   1) rules.mk 是直接解析 .config 里的 CONFIG_CCACHE，不需要 kconfig 展开；
-          #   2) 步骤 9 的注释写明「唯一一次 defconfig」，这里再跑一次会把
-          #      diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
+          #   2) 步骤 10 的注释写明「Validate 里做最后一次 defconfig」，这里再跑一次
+          #      会把 diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
           #      注释要避免的事；
           #   3) 原来那行还带 `|| true`，连失败都看不见（同 P0：管道/短路吞错）。
           sed -i '/^CONFIG_CCACHE=/d; /^# CONFIG_CCACHE is not set/d' .config
@@ -1095,7 +1103,7 @@ jobs:
           && github.actor == github.repository_owner
 
       # =========================================================
-      # 17. 下载软件包（defconfig 已在步骤 9 执行，此处不再重复）
+      # 17. 下载软件包（defconfig 已在步骤 10 执行，此处不再重复）
       # =========================================================
       - name: Download packages
         id: package
@@ -1145,8 +1153,8 @@ jobs:
         uses: actions/cache/save@v5
         continue-on-error: true
         with:
-          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
-          path: /workdir/openwrt/dl
+          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
+          path: ${{ env.CACHE_ROOT }}/dl
 
       # =========================================================
       # 18. 编译固件
@@ -1162,7 +1170,6 @@ jobs:
           JOBS=$(awk -v p="$(nproc)" '/^MemAvailable:/{m=int($2/2097152)+1} END{print m<p?m:p}' /proc/meminfo)
           JOBS=$(( JOBS < 1 ? 1 : JOBS ))
           echo "开始编译 (${JOBS} 线程) / 机型: ${PROFILE}"
-          df -hT /
 
           if make -j"${JOBS}"; then
             echo "多线程编译成功"
