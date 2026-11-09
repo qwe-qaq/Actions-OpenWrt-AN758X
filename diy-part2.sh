@@ -4,6 +4,7 @@
 #   1) 时区 Asia/Shanghai (CST-8)
 #   2) 5G WiFi：CN / auto / HE160
 #   3) 概览页 CPU 行：USR/SYS + 每核明细
+#   4) 固件版本追加作者与构建时间
 # ================================================================
 
 set -euo pipefail
@@ -13,9 +14,14 @@ echo "默认值定制：时区 + 5G WiFi (diy-part2.sh)"
 echo "=========================================="
 
 # =============================================================
-# 可配置：5G 无线参数
+# 可配置：无线参数
 # 如需改动，直接改这里即可（编译期常量，会写进 uci-defaults 脚本）
 # =============================================================
+# 2.4G WiFi 参数
+WIFI_24G_COUNTRY="${WIFI_24G_COUNTRY:-CN}"    # 国家代码（CN = 中国）
+WIFI_24G_CHANNEL="${WIFI_24G_CHANNEL:-auto}"    # 信道（auto = 自动选择）
+
+# 5G WiFi 参数
 WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"       # 国家代码（CN = 中国）
 WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"     # 信道（auto = 自动选择）
 WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"      # 160MHz（WiFi6）；回落 HE80
@@ -26,6 +32,7 @@ FW_AUTHOR="${FW_AUTHOR:-qwe}"
 FW_BUILD_TIME="${FW_BUILD_TIME:-}"
 FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-}"
 
+echo "配置：2.4G country=$WIFI_24G_COUNTRY channel=$WIFI_24G_CHANNEL"
 echo "配置：5G country=$WIFI_5G_COUNTRY channel=$WIFI_5G_CHANNEL htmode=$WIFI_5G_HTMODE fallback=$WIFI_5G_FALLBACK"
 echo "配置：FW_AUTHOR=$FW_AUTHOR"
 
@@ -105,15 +112,20 @@ fi
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/96-wifi-5g-cn <<UCEOF
 #!/bin/sh
-# 5G WiFi 默认值：国家码 CN、信道 auto、频宽 160MHz
+# 无线 WiFi 默认值：2.4G/5G 国家码 CN、5G 信道 auto、频宽 160MHz
 # 由 diy-part2.sh 生成（编译期常量注入）
 
+# 2.4G 国家码和信道
+COUNTRY_24G='$WIFI_24G_COUNTRY'
+CHANNEL_24G='$WIFI_24G_CHANNEL'
+
+# 5G 参数
 COUNTRY='$WIFI_5G_COUNTRY'
 CHANNEL='$WIFI_5G_CHANNEL'
 HTMODE='$WIFI_5G_HTMODE'
 FALLBACK='$WIFI_5G_FALLBACK'
 
-log() { logger -t wifi-5g "\$@"; }
+log() { logger -t wifi-config "\$@"; }
 
 # uci-defaults 可能在 wifi config 之前执行 —— 没生成就先生成
 if [ ! -f /etc/config/wireless ]; then
@@ -135,27 +147,36 @@ for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wif
 	band="\$(uci -q get wireless.\$dev.band 2>/dev/null)"
 	hwmode="\$(uci -q get wireless.\$dev.hwmode 2>/dev/null)"
 
-	# 只处理 5G：新版用 band='5g'，旧版用 hwmode='11a'
+	# 判断是 2.4G 还是 5G
 	is5g=0
 	[ "\$band" = "5g" ] && is5g=1
 	[ -z "\$band" ] && [ "\$hwmode" = "11a" ] && is5g=1
-	[ "\$is5g" = "0" ] && continue
 
-	# 频宽：确认不支持 160MHz 才回落
-	# 取不到 phy 名时不检测（保持 HTMODE）—— 避免无 phy 选项的 radio 被误判回落
-	ht="\$HTMODE"
-	phy="\$(uci -q get wireless.\$dev.phy 2>/dev/null)"
-	if [ -n "\$phy" ] && ! support_160 "\$phy"; then
-		ht="\$FALLBACK"
-		log "\$dev：未检测到 160MHz 能力，回落为 \$ht"
+	if [ "\$is5g" = "1" ]; then
+		# ---- 5G：设置国家码 + 信道 + 频宽 ----
+		# 频宽：确认不支持 160MHz 才回落
+		# 取不到 phy 名时不检测（保持 HTMODE）—— 避免无 phy 选项的 radio 被误判回落
+		ht="\$HTMODE"
+		phy="\$(uci -q get wireless.\$dev.phy 2>/dev/null)"
+		if [ -n "\$phy" ] && ! support_160 "\$phy"; then
+			ht="\$FALLBACK"
+			log "\$dev：未检测到 160MHz 能力，回落为 \$ht"
+		fi
+
+		uci -q set wireless.\$dev.country="\$COUNTRY"
+		uci -q set wireless.\$dev.country_ie='1'
+		uci -q set wireless.\$dev.channel="\$CHANNEL"
+		uci -q set wireless.\$dev.htmode="\$ht"
+
+		log "\$dev (5G): country=\$COUNTRY channel=\$CHANNEL htmode=\$ht"
+	else
+		# ---- 2.4G：设置国家码 + 信道 auto ----
+		uci -q set wireless.\$dev.country="\$COUNTRY_24G"
+		uci -q set wireless.\$dev.country_ie='1'
+		uci -q set wireless.\$dev.channel="\$CHANNEL_24G"
+		log "\$dev (2.4G): country=\$COUNTRY_24G channel=\$CHANNEL_24G"
 	fi
 
-	uci -q set wireless.\$dev.country="\$COUNTRY"
-	uci -q set wireless.\$dev.country_ie='1'
-	uci -q set wireless.\$dev.channel="\$CHANNEL"
-	uci -q set wireless.\$dev.htmode="\$ht"
-
-	log "\$dev：country=\$COUNTRY channel=\$CHANNEL htmode=\$ht"
 	changed=1
 done
 
@@ -187,7 +208,7 @@ fi
 exit 0
 UCEOF
 chmod +x files/etc/uci-defaults/96-wifi-5g-cn
-echo "✅ uci-defaults 5G WiFi 脚本已写入（country=$WIFI_5G_COUNTRY channel=$WIFI_5G_CHANNEL htmode=$WIFI_5G_HTMODE）"
+echo "✅ uci-defaults WiFi 脚本已写入（2.4G country=$WIFI_24G_COUNTRY channel=$WIFI_24G_CHANNEL，5G country=$WIFI_5G_COUNTRY channel=$WIFI_5G_CHANNEL htmode=$WIFI_5G_HTMODE）"
 
 # ---- 4c. 确保 hostapd 支持 160MHz / 11ax ----
 # wpad-openssl = 完整版 hostapd，支持 HE160；
