@@ -534,7 +534,7 @@ jobs:
           # 本次不拉私有仓库：关掉 FTTR 全家桶（开关支持环境变量覆盖）
           if [ "${PRIVATE_REPO}" = "none" ]; then
             echo "ADD_FTTR=false" >> "$GITHUB_ENV"
-            echo "⚠ PRIVATE_REPO=none —— 跳过私有仓库，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 都不会编进固件"
+            echo "⚠ PRIVATE_REPO=none —— 跳过私有仓库，kmod-h3c-fmcs / openwrt-fttr / h3c-fmcs-firmware / luci-app-fttr 都不会编进固件"
             exit 0
           fi
 

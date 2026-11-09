@@ -293,7 +293,21 @@ jobs:
           echo
           echo "=== diy-part1.sh 同款断言：包目录 + Makefile 存在 ==="
           FAIL=0
-          for p in h3c-fmcs h3c-fttr-tools h3c-fmcs-firmware; do
+          # 上游 2026-11 把 h3c-fttr-tools 改名为 openwrt-fttr，源目录在
+          # 不同快照里可能是 fttr / fttr-tools / h3c-fttr-tools，逐个探测，
+          # 与 diy-part1.sh 用同一套候选名。
+          FTTR_TOOLS_DIR=""
+          for cand in fttr fttr-tools h3c-fttr-tools openwrt-fttr; do
+            if [ -f "$DEST/$cand/Makefile" ]; then
+              FTTR_TOOLS_DIR="$cand"
+              break
+            fi
+          done
+          if [ -z "$FTTR_TOOLS_DIR" ]; then
+            echo "  ❌ 未找到 openwrt-fttr 源目录（试过 fttr / fttr-tools / h3c-fttr-tools / openwrt-fttr）"
+            FAIL=1
+          fi
+          for p in h3c-fmcs h3c-fmcs-firmware ${FTTR_TOOLS_DIR:+$FTTR_TOOLS_DIR}; do
             if [ -f "$DEST/$p/Makefile" ]; then
               # ⚠ grep 无匹配会退出 1，pipefail+set -e 会因此杀掉整个步骤，
               #   必须 || true 兜底（h3c-fmcs 是 KernelPackage，本来就没有
