@@ -1280,6 +1280,42 @@ jobs:
       #   而正式这份才是完整的（含编译阶段才带出来的 hostpkg）。
       #   同 key 已存在会报 already exists，continue-on-error 兜住，属正常。
       # =========================================================
+      
+      - name: Remove "Update lists" button from LuCI
+        run: |
+          cd "$GITHUB_WORKSPACE/openwrt"
+          
+          echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
+          
+          # 找 package-manager.js 文件
+          find build_dir/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
+            echo "  📄 处理: $f"
+            # 删除 "Update lists..." 按钮那一行
+            sed -i "/Update lists…/d" "$f"
+          done
+          
+          echo "✅ 按钮已删除"
+
+      - name: Clear apk sources (third-party firmware)
+        run: |
+          cd "$GITHUB_WORKSPACE/openwrt"
+          
+          echo "🔍 清空 apk 软件源配置（第三方固件，官方源不可用）..."
+          
+          # 找所有生成的 apk 配置文件，清空内容
+          find bin/ -name "*.list" -o -name "*.repositories" 2>/dev/null | while read f; do
+            echo "  📄 清空: $f"
+            > "$f"
+          done
+          
+          # 也处理 rootfs 里的配置
+          find bin/targets/ -path "*/etc/apk/*" -type f 2>/dev/null | while read f; do
+            echo "  📄 清空: $f"
+            > "$f"
+          done
+          
+          echo "✅ apk 源已清空"
+
       - name: Save build cache
         if: >-
           success()
