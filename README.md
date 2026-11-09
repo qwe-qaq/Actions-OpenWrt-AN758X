@@ -54,7 +54,7 @@
 | 开关 | 包 | 备注 |
 |---|---|---|
 | `ADD_AIROHA_NPU` | `luci-app-airoha-npu` | NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表 |
-| `ADD_LUCI_APP` | `luci-app-natmode`、`luci-app-pon-status` | NAT 类型三选一、PON 光模块卡片 |
+| `ADD_LUCI_APP` | `luci-app-natmode`、`luci-app-pon-status`、`luci-app-igmpproxy` | NAT 类型三选一、PON 光模块卡片、IGMP Proxy 组播代理 Web 界面 |
 | `ADD_FLUENT` | `luci-theme-fluent` | 与 `argon` / `bootstrap` 可共存 |
 | `ADD_PASSWALL` | `luci-app-passwall` + `xray-core` / `sing-box` | 新版 passwall 把内核做成按需安装，config 里另开了两个 feeds 现成的 |
 | `ADD_OPENCLASH` | `luci-app-openclash` | ⚠ 拖 Ruby 进构建，首次 +20~40 分钟 |
