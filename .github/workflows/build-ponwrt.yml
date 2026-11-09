@@ -542,48 +542,6 @@ jobs:
           [ -d files/etc/uci-defaults ] && chmod +x files/etc/uci-defaults/* 2>/dev/null
 
           # =========================================================
-          # 软件源优化：全面清理外国源，全部替换为中科大 USTC
-          # =========================================================
-          echo "📦 优化软件源配置（全面清理外国源）..."
-
-          # 1. 扫描 etc/opkg/ 下所有配置文件
-          echo "  🔍 扫描 opkg 配置目录..."
-          OPKG_DIR="package/base-files/files/etc/opkg"
-          if [ -d "$OPKG_DIR" ]; then
-            # -print0 + IFS= read -r -d '' 才能安全处理含空格/换行的文件名
-            find "$OPKG_DIR" -type f -name "*.conf" -print0 | while IFS= read -r -d '' f; do
-              echo "    📄 处理: $f"
-              sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
-              sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
-              head -3 "$f" | sed 's/^/      /'
-            done
-            echo "  ✅ opkg 配置目录清理完成"
-          fi
-
-          # 2. 扫描 apk 配置目录（新版包管理器）
-          echo "  🔍 扫描 apk 配置目录..."
-          APK_DIR="package/base-files/files/etc/apk"
-          if [ -d "$APK_DIR" ]; then
-            find "$APK_DIR" -type f -print0 | while IFS= read -r -d '' f; do
-              echo "    📄 处理: $f"
-              sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
-              sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
-              head -3 "$f" | sed 's/^/      /'
-            done
-            echo "  ✅ apk 配置目录清理完成"
-          fi
-
-          # 3. 扫描所有 package 里的 opkg/apk 配置
-          echo "  🔍 扫描其他 package 里的配置..."
-          find package/ -type f \( -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
-            echo "    📄 发现: $f"
-            sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
-            sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
-          done
-
-          echo "  ✅ 软件源清理完成"
-
-          # =========================================================
           # 关键：先用源码自带的 configs/<soc>.config 基座打底
           # 精简配置只写差异，很多符号（如 LUCI_LANG_zh_Hans、TAR_*、
           # MAC80211_*）是 tristate 且无 default，默认 n。若直接拿精简
