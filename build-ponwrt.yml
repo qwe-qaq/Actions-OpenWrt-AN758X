@@ -112,7 +112,7 @@ on:
           - toolchain-only
       ignore_cache:
         description: '忽略构建缓存强制重编（跳过一次恢复，仍会存新一代）'
-        required: true
+        required: false
         default: 'false'
         type: choice
         options:
@@ -312,7 +312,7 @@ jobs:
           S="$GITHUB_WORKSPACE/scripts/pwrt-cache.sh"
           [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
           dos2unix "$S" 2>/dev/null || true
-          chmod +x "$S"
+          # bash "$S" 不需要执行位，无需 chmod +x
           bash "$S" key "$CACHE_ROOT"
 
           # dl 缓存的 key 里不能出现 `/`：SOURCE 形如 pbs05/ponwrt，直接拼进去会
@@ -400,19 +400,58 @@ jobs:
           fi
 
       # =========================================================
+      # 2.3.5 判定「是否需要编译工具链」为统一 flag
+      #
+      #   原先 4 处步骤各自写一串复合条件：
+      #     env.IGNORE_CACHE == 'true'
+      #     || (steps.cache-restore.outputs.cache-matched-key == ''
+      #         && steps.release-restore.outputs.restored != 'true')
+      #   改一次要动 4 处，容易漏、也容易不一致。抽成一个 output 后，
+      #   后续只看 need_toolchain_build 即可。
+      #
+      #   等价性（4 种输入组合逐一验证）：
+      #     IGNORE_CACHE=true                              → true
+      #     matched != ''                                  → false
+      #     matched == '' && restored == 'true'            → false
+      #     matched == '' && restored 为空或 'false'       → true
+      #   与原复合条件逐项一致。
+      #
+      # ⚠ outputs 通过 env 传递，不用 ${{ }} 直接插值 —— 避免未来 cache
+      #   key 规则变化引入 $/反引号/单引号时破坏 shell 脚本。
+      # =========================================================
+      - name: Detect cache state
+        id: cache-state
+        env:
+          MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          RESTORED: ${{ steps.release-restore.outputs.restored }}
+        run: |
+          if [ "${IGNORE_CACHE}" = "true" ]; then
+            REASON="ignore_cache=true，强制重编"
+            NEED=true
+          elif [ -n "${MATCHED_KEY}" ]; then
+            REASON="actions/cache 命中（精确或前缀回退），工具链无需重编"
+            NEED=false
+          elif [ "${RESTORED}" = "true" ]; then
+            REASON="Release 备份恢复，工具链无需重编"
+            NEED=false
+          else
+            REASON="两条通道都未命中，需冷编译工具链"
+            NEED=true
+          fi
+          echo "need_toolchain_build=${NEED}" >> "$GITHUB_OUTPUT"
+          echo "判定: need_toolchain_build=${NEED} —— ${REASON}"
+
+      # =========================================================
       # 2.4 恢复之后：让 make 认账
       #
       #   刷新非 target 的 stamp + 写 tmp/.build。
       #   漏了这一步，make 会因为「源码树比产物新」把工具链重编一遍，
       #   日志却显示 Cache restored successfully —— 白命中。
       #
-      #   两条通道谁命中都要走这一步，所以条件是二者的或。
+      #   条件 = 「有缓存可用」= need_toolchain_build != true（由 2.3.5 给出）
       # =========================================================
       - name: Prepare restored build cache
-        if: >-
-          env.IGNORE_CACHE != 'true'
-          && (steps.cache-restore.outputs.cache-matched-key != ''
-              || steps.release-restore.outputs.restored == 'true')
+        if: steps.cache-state.outputs.need_toolchain_build != 'true'
         env:
           RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
         run: |
@@ -453,6 +492,7 @@ jobs:
       # 4. 更新并安装 Feeds
       # =========================================================
       - name: Update & install feeds
+        timeout-minutes: 30
         run: |
           cd "$BUILD_ROOT/openwrt"
           if [ -n "${FEEDS_CONF}" ] && [ -e "$GITHUB_WORKSPACE/${FEEDS_CONF}" ]; then
@@ -465,6 +505,7 @@ jobs:
       # 5. diy-part1.sh —— 拉取可选插件
       # =========================================================
       - name: Pull optional plugins (diy-part1.sh)
+        timeout-minutes: 30
         run: |
           cd "$BUILD_ROOT/openwrt"
           chmod +x "$GITHUB_WORKSPACE/$DIY_P1_SH"
@@ -509,7 +550,8 @@ jobs:
           echo "  🔍 扫描 opkg 配置目录..."
           OPKG_DIR="package/base-files/files/etc/opkg"
           if [ -d "$OPKG_DIR" ]; then
-            find "$OPKG_DIR" -type f -name "*.conf" | while read f; do
+            # -print0 + IFS= read -r -d '' 才能安全处理含空格/换行的文件名
+            find "$OPKG_DIR" -type f -name "*.conf" -print0 | while IFS= read -r -d '' f; do
               echo "    📄 处理: $f"
               sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
               sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
@@ -522,7 +564,7 @@ jobs:
           echo "  🔍 扫描 apk 配置目录..."
           APK_DIR="package/base-files/files/etc/apk"
           if [ -d "$APK_DIR" ]; then
-            find "$APK_DIR" -type f | while read f; do
+            find "$APK_DIR" -type f -print0 | while IFS= read -r -d '' f; do
               echo "    📄 处理: $f"
               sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
               sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
@@ -533,7 +575,7 @@ jobs:
 
           # 3. 扫描所有 package 里的 opkg/apk 配置
           echo "  🔍 扫描其他 package 里的配置..."
-          find package/ -type f \( -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" \) 2>/dev/null | while read f; do
+          find package/ -type f \( -path "*/etc/opkg/*.conf" -o -path "*/etc/apk/*" \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
             echo "    📄 发现: $f"
             sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$f"
             sed -i 's|downloads.openwrt.org|mirrors.ustc.edu.cn/openwrt|g' "$f"
@@ -610,6 +652,7 @@ jobs:
           echo "WANT_EIP93=${OPT_CRYPTO_EIP93}"     >> "$GITHUB_ENV"
 
       - name: Configure
+        timeout-minutes: 30
         run: |
           cd "$BUILD_ROOT/openwrt"
           WS="$GITHUB_WORKSPACE"
@@ -666,7 +709,7 @@ jobs:
           # 再次隐藏 Argon 主题设置菜单
           echo "🔒 再次隐藏 Argon 主题设置菜单..."
           rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
-          grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while read -r f; do
+          grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while IFS= read -r f; do
             sed -i '/argon-config/d' "$f" 2>/dev/null || true
           done || true
           
@@ -728,6 +771,7 @@ jobs:
       # =========================================================
       - name: Validate configuration
         id: validate
+        timeout-minutes: 15
         run: |
           cd "$BUILD_ROOT/openwrt"
 
@@ -857,16 +901,17 @@ jobs:
       #     make toolchain/install 不会自动补下载，只会去解压 dl 里已有的包
       # =========================================================
       - name: Download toolchain sources
-        if: >-
-          env.IGNORE_CACHE == 'true'
-          || (steps.cache-restore.outputs.cache-matched-key == ''
-              && steps.release-restore.outputs.restored != 'true')
+        id: dl-toolchain
+        timeout-minutes: 40
+        if: steps.cache-state.outputs.need_toolchain_build == 'true'
         run: |
           cd "$BUILD_ROOT/openwrt"
 
+          OK=0
           for i in 1 2 3; do
             echo "===== 第 $i 次尝试: tools/toolchain download ====="
             if make tools/download toolchain/download -j8; then
+              OK=1
               echo "✅ 下载完成"
               break
             fi
@@ -881,6 +926,11 @@ jobs:
 
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
           ls -lh dl 2>/dev/null | head -20
+
+          if [ "$OK" -ne 1 ]; then
+            echo "::error::tools/toolchain download 连试 3 次仍失败 —— 先修网络/镜像，别往下编"
+            exit 1
+          fi
 
           # 工具链三大件强校验，缺了直接失败，别等到解压时才报
           MISS=""
@@ -897,16 +947,13 @@ jobs:
 
       # =========================================================
       # 11. 编译工具链 —— 只在缓存没给出工具链时才动手
-      #   判断依据只有一个：2.2 拿到的 cache-matched-key。命中（含前缀回退）
-      #   就整段跳过，没命中才编。
+      #   判断依据统一由 Detect cache state 步骤的 need_toolchain_build 给出。
       # ⚠ 别改回「按指纹是否相等」：两端算不齐就等于永远冷编译，无自愈路径。
       # =========================================================
       - name: Build tools & toolchain
         id: toolchain
-        if: >-
-          env.IGNORE_CACHE == 'true'
-          || (steps.cache-restore.outputs.cache-matched-key == ''
-              && steps.release-restore.outputs.restored != 'true')
+        timeout-minutes: 180
+        if: steps.cache-state.outputs.need_toolchain_build == 'true'
         run: |
           cd "$BUILD_ROOT/openwrt"
 
@@ -934,12 +981,10 @@ jobs:
       # =========================================================
       - name: Build host go/rust from source
         id: host-src
+        timeout-minutes: 200
         if: >-
           env.PREBUILT_HOST != 'true'
-          && (env.IGNORE_CACHE == 'true'
-              || (steps.cache-restore.outputs.cache-matched-key == ''
-                  && steps.release-restore.outputs.restored != 'true'))
-        timeout-minutes: 200
+          && steps.cache-state.outputs.need_toolchain_build == 'true'
         run: |
           cd "$BUILD_ROOT/openwrt"
           JOBS=$(nproc)
@@ -949,7 +994,10 @@ jobs:
             #   的符号链接，find 默认不跟随，-type d 也不匹配符号链接本身，
             #   结果连 package/feeds/packages/golang 都找不到 —— 三个包全被跳过。
             rel=$(find -L package -maxdepth 4 -type d -name "$p" 2>/dev/null | head -1)
-            [ -z "$rel" ] && { echo "::warning::树里没有 $p，跳过"; continue; }
+            if [ -z "$rel" ]; then
+              echo "::warning::树里没有 $p，跳过"
+              continue
+            fi
 
             echo "===== make $rel/host/compile ====="
             make "$rel/download" >/dev/null 2>&1 || true
@@ -1065,8 +1113,8 @@ jobs:
           #
           # ⚠ 这里【不】跑 make defconfig：
           #   1) rules.mk 是直接解析 .config 里的 CONFIG_CCACHE，不需要 kconfig 展开；
-          #   2) 步骤 10 的注释写明「Validate 里做最后一次 defconfig」，这里再跑一次
-          #      会把 diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
+          #   2) 步骤 10 的 Validate 已完成最后一次 defconfig；这里再跑一次会把
+          #      diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
           #      注释要避免的事；
           #   3) 原来那行还带 `|| true`，连失败都看不见（同 P0：管道/短路吞错）。
           sed -i '/^CONFIG_CCACHE=/d; /^# CONFIG_CCACHE is not set/d' .config
@@ -1107,6 +1155,7 @@ jobs:
       # =========================================================
       - name: Download packages
         id: package
+        timeout-minutes: 90
         if: env.BUILD_SCOPE != 'toolchain-only'
         run: |
           cd "$BUILD_ROOT/openwrt"
@@ -1163,11 +1212,15 @@ jobs:
       # =========================================================
       - name: Compile the firmware
         id: compile
+        timeout-minutes: 260
         if: env.BUILD_SCOPE != 'toolchain-only'
         run: |
           cd "$BUILD_ROOT/openwrt"
-          # 可用内存(MiB) / 2GiB 每 job，下限 1、上限 nproc
-          JOBS=$(awk -v p="$(nproc)" '/^MemAvailable:/{m=int($2/2097152)+1} END{print m<p?m:p}' /proc/meminfo)
+          # 可用内存(MiB) / 2GiB 每 job，下限 1、上限 nproc。
+          # awk 在极端环境下可能输出空（缺 MemAvailable 字段），
+          # 用 ${JOBS:-2} 兜底，避免 $(( )) 语法错误。
+          JOBS=$(awk -v p="$(nproc)" '/^MemAvailable:/{m=int($2/2097152)+1} END{print m<p?m:p}' /proc/meminfo 2>/dev/null || true)
+          JOBS=${JOBS:-2}
           JOBS=$(( JOBS < 1 ? 1 : JOBS ))
           echo "开始编译 (${JOBS} 线程) / 机型: ${PROFILE}"
 
@@ -1432,6 +1485,7 @@ jobs:
           persist-credentials: false
 
       - name: Roll cache generations
+        timeout-minutes: 15
         continue-on-error: true
         run: |
           S="$GITHUB_WORKSPACE/scripts/pwrt-cache.sh"
