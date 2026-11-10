@@ -42,10 +42,12 @@
 
 | SoC | profile |
 |---|---|
-| AN7581 | `fiberhome_hg5382a` `fiberhome_hg5585f-ct` `fiberhome_hg5585f-cu` `gemtek_xg2010g` `nokia_xg-040g-md-ubi` `nokia_xg-040g-tf-ubi` `unionman_ung00a` `znxt_zn504xg-d` `znxt_zn515xg-d` `h3c_hm2004-du`※ |
+| AN7581 | `fiberhome_hg5382a` `fiberhome_an4475-g2`† `fiberhome_hg5585f-ct` `fiberhome_hg5585f-cu` `gemtek_xg2010g` `nokia_xg-040g-md-ubi` `nokia_xg-040g-tf-ubi` `unionman_ung00a` `znxt_zn504xg-d` `znxt_zn515xg-d` `h3c_hm2004-du`※ |
 | AN7583 | `nokia_xg-040g-mf` `nokia_xg-040g-mf-ubi` |
 
 ※ `h3c_hm2004-du` 额外依赖私有仓库 `openwrt-fttr`（FTTR 驱动 / 控制端 / FPGA 固件）与 `luci-app-fttr`，缺凭证时 `diy-part1.sh` 会直接报错退出。
+
+† `fiberhome_an4475-g2` 的板级 DTS / profile 在 **`qwe-qaq/ponwrt@master`**，构建时 `source` 必须选 `fork`（`pbs05/ponwrt` 尚未合入，会在 `Validate configuration` 阶段因机型符号不存在而失败）。`factory` UBI 卷为 **2 MiB**（AN4-2MiB 容器）。FTTR 后端三件套（`h3c-fmcs` / `openwrt-fttr` / FPGA 固件）是 HM2004-DU 专属，本机用 SoC 内置下行 PON，**不启用** `ADD_FTTR`。
 
 ## 插件开关（`diy-part1.sh`）
 

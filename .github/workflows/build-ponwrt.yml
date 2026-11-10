@@ -74,6 +74,7 @@ on:
           - fiberhome_hg5585f-cu
           - fiberhome_hg5585f-ct
           - fiberhome_hg5382a
+          - fiberhome_an4475-g2
           - gemtek_xg2010g
           - nokia_xg-040g-md-ubi
           - nokia_xg-040g-tf-ubi
@@ -212,6 +213,13 @@ jobs:
           # 若用 run_* ，每次运行都会 save 一份新副本，10GB 配额很快被
           # 刷满并淘汰掉真正有用的旧缓存；改用周号后同一周内复用同一条目。
           echo "week=$(date +%Y%W)" >> "$GITHUB_OUTPUT"
+
+          # AN4475-G2 的板级 DTS / profile 目前在 qwe-qaq/ponwrt@master
+          # （本仓库的 fork 源码）。用 pbs05/ponwrt 时该 TARGET_DEVICE
+          # 符号不存在，Validate configuration 会直接失败，这里提前说明。
+          if [ "$PROFILE" = "fiberhome_an4475-g2" ] && [ "${SOURCE}" != "fork" ]; then
+            echo "::warning::AN4475-G2 的板级支持在 qwe-qaq/ponwrt（source=fork），当前 ${SOURCE} 尚无该 profile；请把 source 选为 fork"
+          fi
 
           if [ "$PROFILE" != "all" ]; then
             case "$PROFILE" in
