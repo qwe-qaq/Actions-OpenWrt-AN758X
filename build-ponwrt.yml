@@ -1,4 +1,6 @@
-name: Build PonWrt (Airoha AN758x PON)
+name: Build PonWrt
+run-name: Build PonWrt #${{ github.run_attempt }}
+
 
 env:
   BUILD_ROOT: /workdir
