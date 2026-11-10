@@ -537,7 +537,9 @@ jobs:
             echo "  📄 处理: $f"
             # 删除 "Update lists..." 按钮那一行
             sed -i "/Update lists…/d" "$f"
-          done
+            sed -i "/Download and install package/d" "$f"
+            sed -i "/Package name or URL…/d" "$f"
+          done    
           
           echo "✅ 按钮已删除"
 
