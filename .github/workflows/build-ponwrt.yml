@@ -539,6 +539,7 @@ jobs:
             sed -i "/Update lists…/d" "$f"
             sed -i "/Download and install package/d" "$f"
             sed -i "/Package name or URL…/d" "$f"
+            sed -i "/_('OK')/d" "$f"
             # 删除"可用(Available)"/"更新(Updates)"分类页签，仅保留"已安装"
             sed -i "/'data-mode': 'available'/d" "$f"
             sed -i "/'data-mode': 'updates'/d" "$f"
