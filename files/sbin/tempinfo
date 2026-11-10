@@ -3,7 +3,7 @@
 #
 
 # 输出示例：
-#   CPU: 58.7°C, WiFi: 2.4G: 46.0°C 5G: 48.0°C, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
+#   CPU: 58.7°C, WiFi: 46.0°C/2.4G 48.0°C/5G, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
 
 IEEE_PATH="/sys/class/ieee80211"
 THERMAL_PATH="/sys/class/thermal"
@@ -71,9 +71,9 @@ for p in "$IEEE_PATH"/phy*/hwmon*/temp1_input          "$IEEE_PATH"/phy*/device/
 	[ -n "$t" ] || continue
 	wifi_count=$((wifi_count + 1))
 	if [ "$wifi_count" -eq 1 ]; then
-		wifi_temp="2.4G: $t"
+		wifi_temp="$t/2.4G"
 	elif [ "$wifi_count" -eq 2 ]; then
-		wifi_temp="$wifi_temp 5G: $t"
+		wifi_temp="$wifi_temp  $t/5G"
 	else
 		wifi_temp="$wifi_temp $t"
 	fi
