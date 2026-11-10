@@ -543,6 +543,11 @@ jobs:
             sed -i "/Update lists…/d" "$f"
             sed -i "/Download and install package/d" "$f"
             sed -i "/Package name or URL…/d" "$f"
+            # 删除"可用(Available)"/"更新(Updates)"分类页签，仅保留"已安装"
+            sed -i "/'data-mode': 'available'/d" "$f"
+            sed -i "/'data-mode': 'updates'/d" "$f"
+            sed -i "s/let currentDisplayMode = 'available'/let currentDisplayMode = 'installed'/" "$f"
+            sed -i "/'data-mode': 'installed'/s/cbi-tab-disabled/cbi-tab/" "$f"
           done
           
           echo "✅ 按钮已删除"
