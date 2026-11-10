@@ -483,6 +483,490 @@ jobs:
           #   批量操作会漏掉这一条。
           key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
           # 第二条是旧格式（SOURCE 原值，带斜杠）：只为平滑迁移，本轮拿到本周
+
+env:
+  BUILD_ROOT: /workdir
+  SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
+  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
+  REPO_URL: ${{ github.event.inputs.source == 'fork' && 'https://github.com/qwe-qaq/ponwrt' || 'https://github.com/pbs05/ponwrt' }}
+  FEEDS_CONF: ''
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
+  USE_DL_CACHE: true
+  USE_CCACHE: false
+  CCACHE_MAXSIZE: 2G
+  PREBUILT_HOST: ${{ github.event.inputs.prebuilt_host == 'false' && 'false' || 'true' }}
+  HOST_MODE: ${{ github.event.inputs.prebuilt_host == 'false' && 'source' || 'prebuilt' }}
+  RUST_PIN_FEED: false
+  CACHE_ROOT: /workdir/openwrt
+  CACHE_RELEASE: cache-backup
+  RELEASE_BACKUP: ${{ github.event.inputs.release_backup == 'false' && 'false' || 'true' }}
+  TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REPO_BRANCH: ${{ github.event.inputs.branch || 'master' }}
+  SOC: ${{ github.event.inputs.soc || 'an7581' }}
+  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
+  BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
+  IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
+  FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
+  FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
+  OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
+  OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
+  OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: '编译源码仓库'
+        required: true
+        default: 'pbs05/ponwrt'
+        type: choice
+        options:
+          - fork
+          - pbs05/ponwrt
+      branch:
+        description: 'ponwrt 源码分支'
+        required: true
+        default: 'master'
+      soc:
+        description: 'SoC 平台'
+        required: true
+        default: 'an7581'
+        type: choice
+        options:
+          - an7581
+          - an7583
+      profile:
+        description: '机型 profile (all=全机型编译)'
+        required: true
+        default: 'fiberhome_hg5585f-ct'
+        type: choice
+        options:
+          - fiberhome_hg5585f-cu
+          - fiberhome_hg5585f-ct
+          - fiberhome_hg5382a
+          - gemtek_xg2010g
+          - nokia_xg-040g-md-ubi
+          - nokia_xg-040g-tf-ubi
+          - unionman_ung00a
+          - znxt_zn504xg-d
+          - znxt_zn515xg-d
+          - nokia_xg-040g-mf
+          - nokia_xg-040g-mf-ubi
+          - all
+      opt_arm64ce:
+        description: 'arm64 汇编加密实现（AN7581 走 NEON 位切片 / AN7583 走 CE，按 SoC 自动选）'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+      opt_chacha:
+        description: 'ChaCha20-Poly1305 NEON（Xray / sing-box / WireGuard 推荐）。注：机型 configs 里 chacha20 三个包本就默认 =y，此开关主要额外带 gcm/ccm/ctr/xts'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+      opt_eip93:
+        description: 'EIP93 硬件加密引擎（仅大块 IPSec / 大文件 TLS 有收益，小包更慢）'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+      scope:
+        description: '构建范围 (toolchain-only 仅预热工具链缓存)'
+        required: true
+        default: 'firmware'
+        type: choice
+        options:
+          - firmware
+          - toolchain-only
+      ignore_cache:
+        description: '忽略构建缓存强制重编（跳过一次恢复，仍会存新一代）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      release_backup:
+        description: 'Release 备份通道（actions/cache 7 天无访问会回收，Release 不会）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      prebuilt_host:
+        description: 'Go/Rust/LLVM 用 runner 预编译（false = 全部从源码真实编译，首次 +1.5~2.5 小时）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      fw_author:
+        description: '覆盖固件版本后缀的作者名（LuCI 概览页「固件版本」）。留空 = qwe'
+        required: false
+        default: 'qwe'
+      upload_release:
+        description: '固件发布到 Release（false 则只传 Artifact）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      ssh:
+        description: 'SSH connection to Actions (仅 main 分支、仓库所有者可触发)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# 最小权限：发布阶段需要 contents: write；清理阶段需要 actions: read/write
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 350 分钟接近 GitHub-hosted 6 小时上限；首次冷构建（工具链+全量 kmod）
+    # 在 4 核 16G runner 上可能超时，建议拆出 toolchain-only 预热 job。
+    timeout-minutes: 350
+
+    # 传给 cache-rollover：它只负责删旧代，不重新算 key
+    outputs:
+      cache_prefix: ${{ steps.cache-key.outputs.prefix }}
+      cache_key: ${{ steps.cache-key.outputs.key }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Resolve device profile
+        id: resolve
+        run: |
+          PROFILE="${PROFILE}"
+          SOC="${SOC}"
+
+          # 缓存版本号：按「年+周」滚动（如 202639）。
+          # 用途：dl / ccache 的 key 用它替代 run_id、run_number。
+          # 若用 run_* ，每次运行都会 save 一份新副本，10GB 配额很快被
+          # 刷满并淘汰掉真正有用的旧缓存；改用周号后同一周内复用同一条目。
+          echo "week=$(date +%Y%W)" >> "$GITHUB_OUTPUT"
+
+          if [ "$PROFILE" != "all" ]; then
+            case "$PROFILE" in
+              nokia_xg-040g-mf*) SOC="an7583" ;;
+              *)                  SOC="an7581" ;;
+            esac
+          fi
+
+          # 若传入的 soc 与机型冲突，以机型为准
+          echo "SOC=$SOC" >> "$GITHUB_ENV"
+          echo "PROFILE=$PROFILE" >> "$GITHUB_ENV"
+          # 末尾带上 host 模式：source / prebuilt 两条线并行跑时，固件与
+          # artifact 不再互相覆盖。
+          # DEVICE_NAME 同时决定下面三处，改这一个地方就够：
+          #   · artifact 名 OpenWrt_firmware_${DEVICE_NAME}${FILE_DATE}
+          #   · Release tag  ${DEVICE_NAME}-${REPO_BRANCH}
+          #   · 旧 tag 清理   delete_tag_pattern: ^${DEVICE_NAME}-
+          # 固件文件名不受影响（前缀由 OpenWrt 的 CONFIG_VERSION_DIST 决定）。
+          echo "DEVICE_NAME=ponwrt-${SOC}-${PROFILE}-${HOST_MODE}" >> "$GITHUB_ENV"
+          # 每机型一份 config；profile=all 时回退到 SoC 通用配置
+          if [ "$PROFILE" = "all" ]; then
+            echo "CONFIG_FILE=configs/${SOC}.config" >> "$GITHUB_ENV"
+          else
+            echo "CONFIG_FILE=configs/${PROFILE}.config" >> "$GITHUB_ENV"
+          fi
+
+          echo "========================================"
+          echo "SoC      : $SOC"
+          echo "Profile  : $PROFILE"
+          echo "Source   : ${SOURCE} (${REPO_URL})"
+          echo "Branch   : ${REPO_BRANCH}"
+          echo "Scope    : ${BUILD_SCOPE}"
+          echo "Author   : ${FW_AUTHOR}"
+          echo "Crypto   : ARM64CE=${OPT_CRYPTO_ARM64CE} CHACHA=${OPT_CRYPTO_CHACHA} EIP93=${OPT_CRYPTO_EIP93}"
+          echo "========================================"
+
+      # =========================================================
+      # 1. 释放空间 + 初始化编译环境
+      # =========================================================
+      - name: Free disk space & init build environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # --- 删除预装大件 ---
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/lib/jvm \
+            /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          sudo -E apt-get -yqq purge firefox snapd 2>/dev/null || true
+
+          # --- 配置 8G Swap (aarch64 工具链/内核编译需要) ---
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile && sudo swapon /swapfile
+
+          # --- 安装编译依赖 ---
+          sudo -E apt-get -yqq update
+          sudo -E apt-get -yqq install build-essential clang llvm dwarves \
+            libssl-dev libelf-dev bc flex bison python3 \
+            xz-utils tar unzip zip zstd dos2unix ccache gettext \
+            rsync file wget curl git subversion 2>/dev/null || true
+
+          # 初始化编译环境：建议将该脚本入仓并按 commit sha 校验，
+          # 避免 `curl | bash` 的供应链风险。
+          if [ -x "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" ]; then
+            bash "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" || true
+          else
+            sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)' || true
+          fi
+
+          sudo -E apt-get -yqq autoremove --purge
+          sudo -E apt-get -yqq clean
+          sudo -E timedatectl set-timezone "$TZ"
+
+          # --- 编译根目录（固定 /workdir，与 workflow 级 env 保持一致）---
+          # 注意：BUILD_ROOT 必须是 workflow 级静态变量，不能用 GITHUB_ENV 动态写入，
+          # 否则 actions/cache 的 with.path 里 ${{ env.BUILD_ROOT }} 会解析成空串，
+          # dl 缓存命中不到 /openwrt/dl，导致工具链编译时源码包缺失。
+          sudo mkdir -p /workdir
+          sudo chown "$USER":"$USER" /workdir
+
+          echo "磁盘空间:"; df -hT
+          echo "内存/Swap:"; free -h
+
+      # =========================================================
+      # 2. 克隆源码
+      # =========================================================
+      - name: Clone source code
+        run: |
+          cd "$BUILD_ROOT"
+          df -hT "$PWD"
+          git clone "$REPO_URL" -b "$REPO_BRANCH" --single-branch --depth=1 openwrt
+          ln -sf "$BUILD_ROOT/openwrt" "$GITHUB_WORKSPACE/openwrt"
+
+          # 输入项为空时回退到 workflow 级默认值，确保 diy-part2.sh 拿到的
+          # 始终是确定值，而不是空串（空串会让 LuCI 概览页显示 "·  ·"）。
+          echo "FW_AUTHOR=${FW_AUTHOR:-qwe}" >> "$GITHUB_ENV"
+
+          # 加密开关同样固化一遍：写进 GITHUB_ENV 后，即便哪天 workflow 级
+          # env 表达式改了，本 job 后续步骤读到的仍是本次解析出的确定值。
+          echo "OPT_CRYPTO_ARM64CE=${OPT_CRYPTO_ARM64CE}" >> "$GITHUB_ENV"
+          echo "OPT_CRYPTO_CHACHA=${OPT_CRYPTO_CHACHA}" >> "$GITHUB_ENV"
+          echo "OPT_CRYPTO_EIP93=${OPT_CRYPTO_EIP93}" >> "$GITHUB_ENV"
+
+          cd openwrt && echo "commit: $(git rev-parse --short HEAD)"
+          # .ccache 目录先建出来：actions/cache 对「path 不存在」的条目会跳过，
+          # 建个空目录让路径始终有效（USE_CCACHE=false 时它就一直空着）
+          mkdir -p .ccache
+
+      # =========================================================
+      # 2.1 构建缓存：算 key（移植自 OpenWRT-CI）
+      #
+      #   key = ponwrt-<源站>-<分支>-<SoC>-<上游提交号>
+      #   前缀只由「源站 + 分支 + SoC」决定，机型不进前缀 ——
+      #   同一 SoC 下所有机型共用一份 host/toolchain 缓存。
+      # =========================================================
+      - name: Compute cache key
+        id: cache-key
+        run: |
+          S="$GITHUB_WORKSPACE/scripts/pwrt-cache.sh"
+          [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
+          dos2unix "$S" 2>/dev/null || true
+          # bash "$S" 不需要执行位，无需 chmod +x
+          bash "$S" key "$CACHE_ROOT"
+
+          # dl 缓存的 key 里不能出现 `/`：SOURCE 形如 pbs05/ponwrt，直接拼进去会
+          # 得到 ponwrt-dl-pbs05/ponwrt-master-202643，和工具链 key
+          # （ponwrt-pbs05-ponwrt-...，经 pwrt-cache.sh 的 slug() 处理）风格不一致，
+          # 将来按前缀批量清理时容易漏。这里用同一条规则预先 slug 一次。
+          echo "SOURCE_SLUG=$(printf '%s' "${SOURCE:-unknown}" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_ENV"
+
+      # =========================================================
+      # 2.2 构建缓存：恢复
+      #   key 精确到提交号，restore-keys 用前缀 + "-" 回退 —— 有它才有
+      #   「提交号变了仍命中上一代」，缓存随每次构建自动向前滚动。
+      # ⚠ host* 同时覆盖 host 与 hostpkg（go / python 在这），tool* 覆盖
+      #   toolchain-*。不缓存 target-*：那是固件包安装产物，每次都要重来。
+      # =========================================================
+      - name: Restore build cache
+        id: cache-restore
+        if: env.IGNORE_CACHE != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: ${{ steps.cache-key.outputs.prefix }}-
+          path: |
+            ${{ env.CACHE_ROOT }}/.ccache
+            ${{ env.CACHE_ROOT }}/staging_dir/host*
+            ${{ env.CACHE_ROOT }}/staging_dir/tool*
+
+      # =========================================================
+      # 2.3 Release 备份通道（① 没命中才走）
+      #   7 天回收卡的是「最后访问」而不是「创建」，仓库常常停摆一周以上，
+      #   快通道会空；此时从 Release 取，仍然不用冷编译。
+      # ⚠ 取该前缀下最新的一份（与前缀回退同义），且先传新的再删旧的，
+      #   任何时刻都至少有一份在。
+      # =========================================================
+      - name: Restore cache from Release backup
+        id: release-restore
+        if: >-
+          env.IGNORE_CACHE != 'true'
+          && env.RELEASE_BACKUP == 'true'
+          && steps.cache-restore.outputs.cache-matched-key == ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$CACHE_ROOT"
+          PREFIX="${{ steps.cache-key.outputs.prefix }}"
+
+          if ! gh release view "$CACHE_RELEASE" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+            echo "Release $CACHE_RELEASE 还不存在（首次运行），走真编译"
+            exit 0
+          fi
+
+          # 该前缀下最新的一份；没有就认命
+          ASSET=$(gh release view "$CACHE_RELEASE" --repo "$GITHUB_REPOSITORY" \
+                    --json assets -q '.assets[] | "\(.createdAt) \(.name)"' 2>/dev/null \
+                  | grep " ${PREFIX}-" | sort -r | head -1 | awk '{print $2}')
+
+          if [ -z "$ASSET" ]; then
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+            echo "Release 里没有 ${PREFIX}-* 的备份"
+            exit 0
+          fi
+
+          echo "从 Release 取备份: $ASSET"
+          which unzstd >/dev/null 2>&1 || sudo -E apt-get -yqq install zstd >/dev/null 2>&1 || true
+
+          if ! gh release download "$CACHE_RELEASE" --repo "$GITHUB_REPOSITORY" -p "$ASSET" -D .; then
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::下载 $ASSET 失败"
+            exit 0
+          fi
+
+          if bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" unpack "$CACHE_ROOT" "./$ASSET"; then
+            rm -f "./$ASSET"
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+            # 资产名就是 <key>.tzst，去掉后缀还原出 key —— 只有它与本次 key 完全
+            # 相等，「恢复到的这份缓存 = 当前提交编出来的」才成立，才能判精确命中。
+            echo "restored_key=${ASSET%.tzst}" >> "$GITHUB_OUTPUT"
+            echo "✅ 已从 Release 备份恢复: $ASSET"
+          else
+            rm -f "./$ASSET"
+            echo "restored=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::解压 $ASSET 失败，走真编译"
+          fi
+
+      # =========================================================
+      # 2.3.5 判定「是否需要编译工具链」为统一 flag
+      #
+      #   原先 4 处步骤各自写一串复合条件：
+      #     env.IGNORE_CACHE == 'true'
+      #     || (steps.cache-restore.outputs.cache-matched-key == ''
+      #         && steps.release-restore.outputs.restored != 'true')
+      #   改一次要动 4 处，容易漏、也容易不一致。抽成一个 output 后，
+      #   后续只看 need_toolchain_build 即可。
+      #
+      #   等价性（4 种输入组合逐一验证）：
+      #     IGNORE_CACHE=true                              → true
+      #     matched != ''                                  → false
+      #     matched == '' && restored == 'true'            → false
+      #     matched == '' && restored 为空或 'false'       → true
+      #   与原复合条件逐项一致。
+      #
+      # ⚠ outputs 通过 env 传递，不用 ${{ }} 直接插值 —— 避免未来 cache
+      #   key 规则变化引入 $/反引号/单引号时破坏 shell 脚本。
+      # =========================================================
+      - name: Detect cache state
+        id: cache-state
+        env:
+          MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          RESTORED: ${{ steps.release-restore.outputs.restored }}
+        run: |
+          if [ "${IGNORE_CACHE}" = "true" ]; then
+            REASON="ignore_cache=true，强制重编"
+            NEED=true
+          elif [ -n "${MATCHED_KEY}" ]; then
+            REASON="actions/cache 命中（精确或前缀回退），工具链无需重编"
+            NEED=false
+          elif [ "${RESTORED}" = "true" ]; then
+            REASON="Release 备份恢复，工具链无需重编"
+            NEED=false
+          else
+            REASON="两条通道都未命中，需冷编译工具链"
+            NEED=true
+          fi
+          echo "need_toolchain_build=${NEED}" >> "$GITHUB_OUTPUT"
+          echo "判定: need_toolchain_build=${NEED} —— ${REASON}"
+
+      # =========================================================
+      # 2.4 恢复之后：让 make 认账
+      #
+      #   刷新非 target 的 stamp + 写 tmp/.build。
+      #   漏了这一步，make 会因为「源码树比产物新」把工具链重编一遍，
+      #   日志却显示 Cache restored successfully —— 白命中。
+      #
+      #   条件 = 「有缓存可用」= need_toolchain_build != true（由 2.3.5 给出）
+      # =========================================================
+      - name: Prepare restored build cache
+        if: steps.cache-state.outputs.need_toolchain_build != 'true'
+        env:
+          RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
+        run: |
+          cd "$CACHE_ROOT"
+          echo "来源: $RESTORED_FROM"
+          echo "actions/cache 精确命中: ${{ steps.cache-restore.outputs.cache-hit }}"
+          echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
+          bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
+
+      # =========================================================
+      # 3. dl 下载缓存（源码包，2~5 GB）
+      # ⚠ 不能用 actions/cache 的 save-always（v5 已 deprecated，原文
+      #   "does not work as intended"，实际仍走 post-if: success()）——
+      #   构建一失败，这一趟下的几个 G 就白下了。所以显式 restore + save。
+      #   key 按周滚动、前缀回退，轮换只留最新一份（dl 只增不减，新的是超集）。
+      # =========================================================
+      - name: Restore dl cache
+        id: dl-restore
+        if: env.USE_DL_CACHE == 'true'
+        uses: actions/cache/restore@v5
+        continue-on-error: true
+        with:
+          path: ${{ env.CACHE_ROOT }}/dl
+          # 按分支 + 周号：同一周内复用同一条目。
+          # 原先用 github.run_number → 每次运行都 save 一份新副本，
+          # 10GB 配额会被迅速刷满并淘汰掉有用的旧缓存。
+          # ⚠ 用 SOURCE_SLUG（`pbs05/ponwrt` → `pbs05-ponwrt`），别用 SOURCE：
+          #   key 里带 `/` 本身能存，但与工具链 key 的写法不一致，后续按前缀
+          #   批量操作会漏掉这一条。
+          key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
+          # 第二条是旧格式（SOURCE 原值，带斜杠）：只为平滑迁移，本轮拿到本周
           # 那份 1.2 GB 后会按新格式存一份，旧的 7 天无访问自动回收。下版可删。
           restore-keys: |
             ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-
@@ -535,7 +1019,7 @@ jobs:
           echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
           
           # 找 package-manager.js 文件
-          find feeds/ -name "package-manager.js" -path "*/luci-app-package-manager/*"
+          find feeds/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
            
             echo "  📄 处理: $f"
             # 删除 "Update lists..." 按钮那一行
