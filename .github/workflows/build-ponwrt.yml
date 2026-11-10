@@ -1020,13 +1020,13 @@ jobs:
           
           # 找 package-manager.js 文件
           find feeds/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
-           
             echo "  📄 处理: $f"
             # 删除 "Update lists..." 按钮那一行
             sed -i "/Update lists…/d" "$f"
           done
           
           echo "✅ 按钮已删除"
+
       
       # =========================================================
       # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
