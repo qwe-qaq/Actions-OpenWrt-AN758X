@@ -528,7 +528,21 @@ jobs:
           dos2unix "$S" 2>/dev/null || true
           bash "$S" "$BUILD_ROOT/openwrt"
 
-
+      - name: Remove "Update lists" button from LuCI
+        run: |
+          cd "$GITHUB_WORKSPACE/openwrt"
+          
+          echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
+          
+          # 找 package-manager.js 文件
+          find build_dir/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
+            echo "  📄 处理: $f"
+            # 删除 "Update lists..." 按钮那一行
+            sed -i "/Update lists…/d" "$f"
+          done
+          
+          echo "✅ 按钮已删除"
+      
       # =========================================================
       # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
       # =========================================================
@@ -1239,20 +1253,6 @@ jobs:
       #   同 key 已存在会报 already exists，continue-on-error 兜住，属正常。
       # =========================================================
       
-      - name: Remove "Update lists" button from LuCI
-        run: |
-          cd "$GITHUB_WORKSPACE/openwrt"
-          
-          echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
-          
-          # 找 package-manager.js 文件
-          find build_dir/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
-            echo "  📄 处理: $f"
-            # 删除 "Update lists..." 按钮那一行
-            sed -i "/Update lists…/d" "$f"
-          done
-          
-          echo "✅ 按钮已删除"
 
       - name: Clear apk sources (third-party firmware)
         run: |
