@@ -3,7 +3,7 @@
 #
 
 # 输出示例：
-#   CPU: 58.7°C, WiFi: 46.0°C 48.0°C, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
+#   CPU: 58.7°C, WiFi: 2.4G: 46.0°C 5G: 48.0°C, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
 
 IEEE_PATH="/sys/class/ieee80211"
 THERMAL_PATH="/sys/class/thermal"
@@ -62,12 +62,21 @@ fi
 
 # WiFi 温度（mt76 / MT7916）
 # mt76 的 hwmon 可能挂在 phy*/hwmon* 或 phy*/device/hwmon/hwmon*，两种都试
+# 按顺序：第一个=2.4G，第二个=5G
 wifi_temp=""
-for p in "$IEEE_PATH"/phy*/hwmon*/temp1_input \
-         "$IEEE_PATH"/phy*/device/hwmon/hwmon*/temp1_input; do
+wifi_count=0
+for p in "$IEEE_PATH"/phy*/hwmon*/temp1_input          "$IEEE_PATH"/phy*/device/hwmon/hwmon*/temp1_input; do
 	[ -r "$p" ] || continue
 	t="$(fmt_c "$p")"
-	[ -n "$t" ] && wifi_temp="${wifi_temp:+$wifi_temp }$t"
+	[ -n "$t" ] || continue
+	wifi_count=$((wifi_count + 1))
+	if [ "$wifi_count" -eq 1 ]; then
+		wifi_temp="2.4G: $t"
+	elif [ "$wifi_count" -eq 2 ]; then
+		wifi_temp="$wifi_temp 5G: $t"
+	else
+		wifi_temp="$wifi_temp $t"
+	fi
 done
 
 # PON 光模块
