@@ -1,0 +1,25 @@
+#!/bin/sh
+# 默认时区：Asia/Shanghai (CST-8)
+# NTP：阿里云主用，cn.pool 备用；dnsmasq 放行 ntp.org.cn 兜底
+
+# 时区
+uci -q batch <<'UCI'
+set system.@system[0].zonename='Asia/Shanghai'
+set system.@system[0].timezone='CST-8'
+commit system
+UCI
+
+# NTP 服务器（先清默认列表再写入）
+uci -q set system.ntp='timeserver'
+uci -q delete system.ntp.server
+uci -q add_list system.ntp.server='ntp.aliyun.com'
+uci -q add_list system.ntp.server='cn.pool.ntp.org'
+uci -q set system.ntp.enabled='1'
+uci -q commit system
+
+# dnsmasq 重绑定保护白名单：放行 ntp.org.cn，避免 NTP 域名被误拦
+uci -q delete dhcp.@dnsmasq[0].rebind_domain
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='ntp.org.cn'
+uci -q commit dhcp
+
+exit 0
