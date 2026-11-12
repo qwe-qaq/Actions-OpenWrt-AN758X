@@ -68,7 +68,7 @@ on:
       profile:
         description: '机型 profile (all=全机型编译)'
         required: true
-        default: 'h3c_hm2004-du'
+        default: 'fiberhome_an4475-g2'
         type: choice
         options:
           - fiberhome_hg5585f-cu
@@ -724,22 +724,7 @@ jobs:
           [ -d files/sbin ] && chmod +x files/sbin/* 2>/dev/null
           [ -d files/etc/uci-defaults ] && chmod +x files/etc/uci-defaults/* 2>/dev/null
 
-          # =========================================================
-          # 关键：先用源码自带的 configs/<soc>.config 基座打底
-          # 精简配置只写差异，很多符号（如 LUCI_LANG_zh_Hans、TAR_*、
-          # MAC80211_*）是 tristate 且无 default，默认 n。若直接拿精简
-          # 配置当 .config，defconfig 会把它们重置成 n，导致中文包丢失。
-          # 先铺基座再追加差异，基座所有非默认值都保留，后写的覆盖先写的。
-          # =========================================================
-          if [ -f "configs/${SOC}.config" ]; then
-            cp "configs/${SOC}.config" .config
-            echo "✅ 已用源码基座 defconfig 打底: configs/${SOC}.config"
-          else
-            : > .config
-            echo "::warning::源码中无 configs/${SOC}.config，仅用精简配置"
-          fi
 
-          # 再追加工型精简配置（其中的 =y / is not set 会覆盖基座）
           if [ -e "$GITHUB_WORKSPACE/${CONFIG_FILE}" ]; then
             cat "$GITHUB_WORKSPACE/${CONFIG_FILE}" >> .config
             echo "✅ 已追加机型配置: ${CONFIG_FILE}"
