@@ -83,7 +83,7 @@ on:
       profile:
         description: '机型 profile (all=全机型编译)'
         required: true
-        default: 'fiberhome_hg5585f-ct'
+        default: 'fiberhome_an4475-g2'
         type: choice
         options:
           - fiberhome_an4475-g2
