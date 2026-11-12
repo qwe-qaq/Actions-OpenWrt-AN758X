@@ -23,7 +23,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REPO_BRANCH: ${{ github.event.inputs.branch || 'master' }}
   SOC: ${{ github.event.inputs.soc || 'an7581' }}
-  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
+  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_an4475-g2' }}
   BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
@@ -55,8 +55,6 @@ env:
   # 逐个匿名探测，只有探测失败的才注入凭证。
   PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
   PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
-  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'qwe-qaq/luci-app-fttr' }}
-  FTTR_LUCI_BRANCH: ${{ github.event.inputs.fttr_luci_branch || 'main' }}
 
 on:
   repository_dispatch:
