@@ -1,0 +1,35 @@
+#!/bin/sh
+# 802.11s 无线 mesh：mesh11sd 自动组网参数
+# 主节点（接光猫/有上行）与子节点（mesh 回传）共用同一 mesh_id / mesh_key
+# 仅在首次启动（或恢复出厂）执行一次；改参数后可手动重跑本脚本
+
+MESH_ID='AN7581-Mesh'
+MESH_KEY='qwe12345'
+MESH_BAND='5g'          # 回传走 5G；2.4G 留给终端覆盖
+MESH_ZONE='lan'
+
+log() { logger -t mesh11sd-config "$@"; }
+
+command -v uci >/dev/null 2>&1 || exit 0
+
+# 确保 setup 段存在
+uci -q get mesh11sd.setup >/dev/null 2>&1 || uci -q set mesh11sd.setup=mesh11sd
+
+uci -q set mesh11sd.setup.enabled='1'
+uci -q set mesh11sd.setup.auto_config='1'
+uci -q set mesh11sd.setup.auto_mesh_id="$MESH_ID"
+uci -q set mesh11sd.setup.auto_mesh_key="$MESH_KEY"
+uci -q set mesh11sd.setup.auto_mesh_band="$MESH_BAND"
+uci -q set mesh11sd.setup.auto_mesh_network="$MESH_ZONE"
+uci -q set mesh11sd.setup.portal_detect='1'
+uci -q set mesh11sd.setup.vtun_enable='0'   # 家庭组网不用 vxlan 隧道，避免缺 ip-full/vxlan 告警
+
+uci -q commit mesh11sd
+
+# 第三方服务包默认未 enable，这里开启开机自启并立即拉起
+/etc/init.d/mesh11sd enable >/dev/null 2>&1 || true
+/etc/init.d/mesh11sd restart >/dev/null 2>&1 || true
+
+log "mesh11sd: id=$MESH_ID band=$MESH_BAND zone=$MESH_ZONE"
+
+exit 0
