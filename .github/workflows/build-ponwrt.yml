@@ -88,6 +88,7 @@ on:
         default: 'fiberhome_hg5585f-ct'
         type: choice
         options:
+          - fiberhome_an4475-g2
           - fiberhome_hg5585f-cu
           - fiberhome_hg5585f-ct
           - fiberhome_hg5382a
