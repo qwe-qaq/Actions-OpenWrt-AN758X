@@ -416,8 +416,9 @@ CONFIG_PACKAGE_kmod-fs-vfat=y
 #     刷机后用 mii/ethtool 确认，再把不用的那套改成 is not set。
 #=========================================================================
 CONFIG_PACKAGE_kmod-phy-realtek=y                  # DTS 描述的 001c.c849
-CONFIG_PACKAGE_kmod-phy-airoha-en8811h=y          # 备选：EN8811H 2.5G PHY
-CONFIG_PACKAGE_airoha-en8811h-firmware=y          # 备选：EN8811H MD32 固件
+kmod-phy-motorcomm=y  
+# CONFIG_PACKAGE_kmod-phy-airoha-en8811h=y          # 备选：EN8811H 2.5G PHY
+# CONFIG_PACKAGE_airoha-en8811h-firmware=y          # 备选：EN8811H MD32 固件
 # CONFIG_PACKAGE_kmod-phy-maxlinear is not set    # GPY211，本机型不用
 # CONFIG_PACKAGE_rtl826x-firmware is not set      # RTL826x 10G 固件，本机型不用
 
@@ -426,7 +427,9 @@ CONFIG_PACKAGE_airoha-en8811h-firmware=y          # 备选：EN8811H MD32 固件
 #=========================================================================
 CONFIG_PACKAGE_kmod-leds-pwm=y                    # pwm-leds（pon:green）
 CONFIG_PACKAGE_kmod-pwm-airoha=y                  # AN7581 PWM 控制器
-
+CONFIG_GPIO_PCA953X=y
+CONFIG_GPIO_PCA953X_IRQ=y
+CONFIG_MOTORCOMM_PHY=y
 #=========================================================================
 # 18. 引导与固件 —— TF-A BL2 / BL31（AN7581）
 #=========================================================================
