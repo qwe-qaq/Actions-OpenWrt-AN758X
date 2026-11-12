@@ -1,6 +1,6 @@
 #!/bin/sh
 # 默认时区：Asia/Shanghai (CST-8)
-# NTP：阿里云主用，cn.pool 备用；dnsmasq 放行 ntp.org.cn 兜底
+# NTP：阿里云主用，cn.pool 备用；dnsmasq 重绑定白名单放行 NTP 时间源与联网检测域
 
 # 时区
 uci -q batch <<'UCI'
@@ -17,9 +17,27 @@ uci -q add_list system.ntp.server='cn.pool.ntp.org'
 uci -q set system.ntp.enabled='1'
 uci -q commit system
 
-# dnsmasq 重绑定保护白名单：放行 ntp.org.cn，避免 NTP 域名被误拦
+# dnsmasq 重绑定保护白名单：放行 NTP 时间源与系统联网检测域，避免被误判为 DNS rebind
+# 说明：rebind_domain 为后缀匹配，放父域即可覆盖其子域；仅放行具体厂商域，未放过宽顶级域
 uci -q delete dhcp.@dnsmasq[0].rebind_domain
-uci -q add_list dhcp.@dnsmasq[0].rebind_domain='ntp.org.cn'
+# —— NTP 时间同步源 ——
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/ntp.org.cn/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/aliyun.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/tencent.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/tencentyun.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/time.edu.cn/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/ntp.org/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/ntsc.ac.cn/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/apple.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/windows.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/cloudflare.com/'
+# —— 系统联网 / 门户检测域 ——
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/msftncsi.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/msftconnecttest.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/microsoft.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/gstatic.com/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/gnome.org/'
+uci -q add_list dhcp.@dnsmasq[0].rebind_domain='/mozilla.net/'
 uci -q commit dhcp
 
 exit 0
