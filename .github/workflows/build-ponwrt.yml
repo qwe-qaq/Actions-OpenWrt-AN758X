@@ -10,7 +10,7 @@ env:
   # 唯一真相源：固件版本后缀的作者名（LuCI 概览页「固件版本」）
   # 由 fw_author 输入项覆盖，留空则 qwe
   FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
-  REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
+  REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe-qaq/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
