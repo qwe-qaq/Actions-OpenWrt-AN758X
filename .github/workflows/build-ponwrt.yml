@@ -13,7 +13,10 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
+  # 缓存开关：USE_DL_CACHE 保留（复用 dl 源码包，避免每次重新下载）；
+  # USE_BUILD_CACHE=false = 不恢复旧工具链/host 产物、也不存回（每次冷编工具链）
   USE_DL_CACHE: true
+  USE_BUILD_CACHE: false
   USE_CCACHE: false
   CCACHE_MAXSIZE: 2G
   PREBUILT_HOST: ${{ github.event.inputs.prebuilt_host == 'false' && 'false' || 'true' }}
@@ -332,7 +335,7 @@ jobs:
       # =========================================================
       - name: Restore build cache
         id: cache-restore
-        if: env.IGNORE_CACHE != 'true'
+        if: env.USE_BUILD_CACHE == 'true' && env.IGNORE_CACHE != 'true'
         uses: actions/cache/restore@v5
         with:
           key: ${{ steps.cache-key.outputs.key }}
@@ -352,7 +355,8 @@ jobs:
       - name: Restore cache from Release backup
         id: release-restore
         if: >-
-          env.IGNORE_CACHE != 'true'
+          env.USE_BUILD_CACHE == 'true'
+          && env.IGNORE_CACHE != 'true'
           && env.RELEASE_BACKUP == 'true'
           && steps.cache-restore.outputs.cache-matched-key == ''
         continue-on-error: true
@@ -1053,7 +1057,8 @@ jobs:
         #   tools/toolchain 也一起丢了，等于白跑 1.5 小时。
         #   用 !cancelled()：只要没被手动取消就存，编译失败也保住成果。
         if: >-
-          (!cancelled())
+          env.USE_BUILD_CACHE == 'true'
+          && (!cancelled())
           && steps.toolchain.outcome == 'success'
           && steps.cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -1291,7 +1296,8 @@ jobs:
 
       - name: Save build cache
         if: >-
-          success()
+          env.USE_BUILD_CACHE == 'true'
+          && success()
           && steps.cache-restore.outputs.cache-hit != 'true'
           && (steps.compile.outcome == 'success' || steps.toolchain.outcome == 'success')
         uses: actions/cache/save@v5
@@ -1312,7 +1318,8 @@ jobs:
       # =========================================================
       - name: Save cache to Release backup
         if: >-
-          env.RELEASE_BACKUP == 'true'
+          env.USE_BUILD_CACHE == 'true'
+          && env.RELEASE_BACKUP == 'true'
           && success()
           && steps.cache-restore.outputs.cache-hit != 'true'
           && (steps.compile.outcome == 'success' || steps.toolchain.outcome == 'success')
@@ -1499,8 +1506,8 @@ jobs:
   cache-rollover:
     name: Roll build cache
     needs: build
-    # 只在构建成功、且确实存过缓存时才轮换
-    if: ${{ needs.build.result == 'success' && needs.build.outputs.cache_key != '' }}
+    # 缓存已整体关闭（USE_BUILD_CACHE=false），轮换 job 一并禁用，不再清理旧代
+    if: false
     runs-on: ubuntu-24.04
     concurrency:
       group: ponwrt-cache-rollover-${{ github.ref }}-${{ needs.build.outputs.cache_prefix }}
