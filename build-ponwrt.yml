@@ -5,8 +5,8 @@ run-name: Build PonWrt #${{ github.run_attempt }}
 env:
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
-  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
-  REPO_URL: ${{ github.event.inputs.source == 'fork' && 'https://github.com/qwe-qaq/ponwrt' || 'https://github.com/pbs05/ponwrt' }}
+  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'ponwrt' }}
+  REPO_URL: ${{ github.event.inputs.source == 'fork' && 'https://github.com/mutoli417/ponwrt' || 'https://github.com/pbs05/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
