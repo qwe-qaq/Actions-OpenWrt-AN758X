@@ -12,7 +12,8 @@ delay() {
 
 
 legacy_usage() {
-	top -n1 2>/dev/null | awk '/^CPU/ { printf("%d%%", 100 - $8); exit }'
+	# top 的 CPU 行：空闲列为 $4（$8 是 steal 累计，不是空闲）
+	top -n1 2>/dev/null | awk '/^CPU/ { printf("%d%%", 100 - $4); exit }'
 }
 
 
