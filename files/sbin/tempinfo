@@ -3,7 +3,7 @@
 #
 
 # 输出示例：
-#   CPU: 58.7°C, WiFi: 46.0°C/2.4G 48.0°C/5G, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
+#   CPU: 58.7°C, WiFi: 46.0°C, SW-ASIC: 83.7°C, PON: 48.5°C ↑2.41 ↓-21.30 dBm 12.50 mA 3.30 V
 
 IEEE_PATH="/sys/class/ieee80211"
 THERMAL_PATH="/sys/class/thermal"
@@ -60,23 +60,33 @@ if [ -r "$THERMAL_PATH/thermal_zone0/temp" ]; then
 	cpu_temp="$(fmt_c "$THERMAL_PATH/thermal_zone0/temp")"
 fi
 
-# WiFi 温度（mt76 / MT7916）
-# mt76 的 hwmon 可能挂在 phy*/hwmon* 或 phy*/device/hwmon/hwmon*，两种都试
-# 按顺序：第一个=2.4G，第二个=5G
+# WiFi 温度（mt76 / MT7915 双频单芯片）
+# 2.4G/5G 共用同一颗 die，芯片内部只有一个温度传感器；两个 phy 的 hwmon
+# 读到的是同一个温度。这里只取第一个有效节点作为芯片温度，不再分频段贴标签。
+# mt76 的 hwmon 可能挂在 phy*/hwmon* 或 phy*/device/hwmon/hwmon*，两种都试。
 wifi_temp=""
-wifi_count=0
-for p in "$IEEE_PATH"/phy*/hwmon*/temp1_input          "$IEEE_PATH"/phy*/device/hwmon/hwmon*/temp1_input; do
+for p in "$IEEE_PATH"/phy*/hwmon*/temp1_input \
+         "$IEEE_PATH"/phy*/device/hwmon/hwmon*/temp1_input; do
 	[ -r "$p" ] || continue
 	t="$(fmt_c "$p")"
 	[ -n "$t" ] || continue
-	wifi_count=$((wifi_count + 1))
-	if [ "$wifi_count" -eq 1 ]; then
-		wifi_temp="$t/2.4G"
-	elif [ "$wifi_count" -eq 2 ]; then
-		wifi_temp="$wifi_temp  $t/5G"
-	else
-		wifi_temp="$wifi_temp $t"
-	fi
+	wifi_temp="$t"
+	break
+done
+
+# SW-ASIC 温度（MT7530 有线交换机芯片）
+# 遍历 /sys/class/hwmon，按 name 前缀 mt7530* 匹配交换机 ASIC，不依赖 hwmon 编号；
+# mt7915_phy0/phy1 是 WiFi 芯片，前缀不同不会误匹配。
+sw_temp=""
+for h in /sys/class/hwmon/hwmon*; do
+	[ -d "$h" ] || continue
+	hname="$(cat "$h/name" 2>/dev/null)"
+	case "$hname" in
+		mt7530*)
+			[ -r "$h/temp1_input" ] && sw_temp="$(fmt_c "$h/temp1_input")"
+			break
+			;;
+	esac
 done
 
 # PON 光模块
@@ -96,6 +106,7 @@ out=""
 
 [ -n "$cpu_temp" ] && out="CPU: $cpu_temp"
 [ -n "$wifi_temp" ] && out="${out:+$out, }WiFi: $wifi_temp"
+[ -n "$sw_temp" ] && out="${out:+$out, }SW-ASIC: $sw_temp"
 
 if [ -n "$pon_temp" ]; then
 	pon="PON: ${pon_temp}°C"
