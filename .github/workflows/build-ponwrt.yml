@@ -799,10 +799,12 @@ jobs:
           # 保证随后 MISSING / OPT_MISS 校验看到的就是最终 .config。
           # =========================================================
           echo "🔒 defconfig 后补一次强制配置（幂等）..."
-          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
+                    for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
                      firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl \
                      jsonfilter rpcd-mod-file luci-app-ssr-plus xray-core sing-box \
-                     luci-app-iptv luci-i18n-iptv-zh-cn; do
+                     luci-app-iptv luci-i18n-iptv-zh-cn \
+                     nlbwmon luci-app-nlbwmon luci-i18n-nlbwmon-zh-cn luci-lib-chartjs \
+                     mesh11sd; do
             sed -i "/CONFIG_PACKAGE_$pkg[= ]/d" .config 2>/dev/null || true
             echo "CONFIG_PACKAGE_$pkg=y" >> .config
           done
