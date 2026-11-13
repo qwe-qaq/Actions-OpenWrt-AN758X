@@ -126,8 +126,12 @@ if [ "${RUST_PIN_FEED:-0}" = "1" ]; then
     # 无论是不是刚装的，都要确认这个 toolchain 上有目标平台的 std
     rustup target add --toolchain "$FEED_VER" "$RUST_TARGET" >>"$REPORT" 2>&1 || true
     PIN_ROOT=$(rustup run "$FEED_VER" rustc --print sysroot 2>/dev/null || true)
+    PIN_OK_TOOLCHAIN=1
+    for t in cargo rustc rustdoc; do
+      [ -x "$PIN_ROOT/bin/$t" ] || PIN_OK_TOOLCHAIN=0
+    done
     if [ -n "$PIN_ROOT" ] && [ -d "$PIN_ROOT/lib/rustlib/$RUST_TARGET/lib" ] \
-       && [ -x "$PIN_ROOT/bin/rustc" ]; then
+       && [ "$PIN_OK_TOOLCHAIN" = 1 ]; then
       RUST_TOOLCHAIN=$FEED_VER
       RUST_ROOT=$PIN_ROOT
       PIN_OK=1

@@ -25,7 +25,7 @@
     | sub("-[0-9a-f]{40}$"; "")
     | sub("-[0-9]{6}$"; ""))
 | map(
-    (sort_by(.createdAt) | reverse) as $g
+    (sort_by(.createdAt | fromdate) | reverse) as $g
     | ($g | map(select(.key | endswith("-early") | not)) | first) as $keep
     | if $keep then ($g | map(select(.key != $keep.key)))
       else ($g | .[1:])

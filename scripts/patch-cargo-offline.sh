@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================
-# patch-cargo-offline.sh —— 放宽 rust 包的「禁止联网」限制
+# patch-cargo-offline.sh —— 按包放宽 rust 包的「禁止联网」限制
 #
 #   背景：h3c-fttr-tools 的 Makefile 用 cargo install --locked --frozen。
 #   --frozen = 锁版本 + 禁止联网，只认 CARGO_HOME(dl/cargo) 里已有的 crate；
 #   而 dl/cargo 从缓存继承（只增不减），上游在 Cargo.lock 加新依赖时缓存里没有：
 #     Caused by: failed to download `core_detect v1.0.0`
 #     Caused by: attempting to make an HTTP request, but --frozen was specified
-#   现象是编到一半某个 rust 包必挂，换机型、换缓存都复现。
 #
-#   这里只摘掉 --frozen / --offline，--locked 保留（版本仍锁死，结果可复现）。
-# ⚠ 这是 CI 侧兜底。更正统的做法在包侧：Build/Prepare 里 cargo fetch --locked
-#   把 crate 拉进 CARGO_HOME，编译阶段再用 --frozen。
+#   ⚠ 只对白名单内的包摘除 --frozen / --offline，--locked 保留（版本仍锁死）；
+#     白名单外的包保持离线参数原样，避免全局放宽可复现约束。
+#   白名单可用环境变量 CARGO_OFFLINE_ALLOWLIST 覆盖（空格分隔的路径子串）。
+#   更正统的做法在包侧：Build/Prepare 里 cargo fetch --locked 把 crate 拉进
+#   CARGO_HOME，编译阶段再用 --frozen。
 #   用法: bash patch-cargo-offline.sh <openwrt_dir>
 # =============================================================
 
@@ -19,6 +20,9 @@ set -u
 
 OW="${1:-$PWD}"
 cd "$OW" || { echo "::error::无法进入 $OW"; exit 1; }
+
+# 默认白名单：脚本头注释里确认过缺 crate 的包
+ALLOWLIST="${CARGO_OFFLINE_ALLOWLIST:-h3c-fttr-tools}"
 
 # 只看构建脚本本身：build_dir / staging_dir 里是解压出来的副本，改了没用
 LIST=$(grep -rlE -- '--frozen|--offline' \
@@ -34,23 +38,45 @@ fi
 echo "===== 以下文件包含离线参数 ====="
 printf '%s\n' "$LIST" | sed 's/^/  /'
 
+in_allowlist() {
+  local f="$1" kw
+  for kw in $ALLOWLIST; do
+    case "$f" in
+      *"$kw"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 CHANGED=0
+REVIEW=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ -f "$f" ] || continue
+
+  if ! in_allowlist "$f"; then
+    REVIEW="${REVIEW}${f}"$'\n'
+    continue
+  fi
+
   # 只有真的改了才计数：sed 后比对一下
   BEFORE=$(md5sum "$f" | cut -d' ' -f1)
   sed -i 's/--frozen//g; s/--offline//g' "$f"
   AFTER=$(md5sum "$f" | cut -d' ' -f1)
   if [ "$BEFORE" != "$AFTER" ]; then
     CHANGED=$((CHANGED + 1))
-    echo "已放宽: $f"
+    echo "已放宽（白名单内）: $f"
     # 把改完的那几行打出来，方便核对没把别的参数一起吃掉
     grep -nE 'cargo (install|build|fetch)' "$f" | head -3 | sed 's/^/    /'
   fi
 done <<< "$LIST"
 
-echo "共处理 $CHANGED 个文件（--locked 保留，仅去掉禁止联网的部分）"
+if [ -n "$REVIEW" ]; then
+  echo "::warning::以下包未在白名单，离线参数（--frozen/--offline）保留，需人工确认是否缺 crate："
+  printf '%s' "$REVIEW" | sed 's/^/  /'
+fi
+
+echo "共放宽 $CHANGED 个文件（--locked 保留，仅去掉禁止联网的部分）"
 
 # 复核：还有没有漏网的（比如参数被拼在变量里、跨行续行）
 LEFT=$(grep -rlE -- '--frozen|--offline' \
