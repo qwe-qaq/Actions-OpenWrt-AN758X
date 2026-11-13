@@ -4,13 +4,22 @@
 # 仅在首次启动（或恢复出厂）执行一次；改参数后可手动重跑本脚本
 
 MESH_ID='AN7581-Mesh'
-MESH_KEY='qwe12345'
 MESH_BAND='5g'          # 回传走 5G；2.4G 留给终端覆盖
 MESH_ZONE='lan'
 
 log() { logger -t mesh11sd-config "$@"; }
 
 command -v uci >/dev/null 2>&1 || exit 0
+
+# 已有密钥则沿用（幂等，不每次启动轮换）；首次启动生成随机 PSK。
+# 注意：mesh 各节点必须使用同一把共享密钥，多节点组网时需在 LuCI 把同一
+# PSK 同步到其它节点，或统一改成自定义强口令。
+existing_key="$(uci -q get mesh11sd.setup.auto_mesh_key)"
+if [ -n "$existing_key" ]; then
+	MESH_KEY="$existing_key"
+else
+	MESH_KEY="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+fi
 
 # 确保 setup 段存在
 uci -q get mesh11sd.setup >/dev/null 2>&1 || uci -q set mesh11sd.setup=mesh11sd

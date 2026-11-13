@@ -40,13 +40,11 @@ for dev in $(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wifi
 			log "$dev：未检测到 160MHz 能力，回落为 $ht"
 		fi
 		uci -q set wireless.$dev.country="$COUNTRY"
-		uci -q set wireless.$dev.country_ie='1'
 		uci -q set wireless.$dev.channel="$CHANNEL"
 		uci -q set wireless.$dev.htmode="$ht"
 		log "$dev (5G): country=$COUNTRY channel=$CHANNEL htmode=$ht"
 	else
 		uci -q set wireless.$dev.country="$COUNTRY_24G"
-		uci -q set wireless.$dev.country_ie='1'
 		uci -q set wireless.$dev.channel="$CHANNEL_24G"
 		log "$dev (2.4G): country=$COUNTRY_24G channel=$CHANNEL_24G"
 	fi
@@ -61,9 +59,11 @@ for iface in $(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wi
 	[ "$band" = "5g" ] && is5g=1
 	[ -z "$band" ] && [ "$hwmode" = "11a" ] && is5g=1
 	if [ "$is5g" = "1" ]; then
-		uci -q set wireless.$iface.ssid="TP-LINK_6628_5G"
+		OLD_SSID="$(uci -q get wireless.$iface.ssid 2>/dev/null)"
+		[ -z "$OLD_SSID" ] && uci -q set wireless.$iface.ssid="PonWrt_5G"
 	else
-		uci -q set wireless.$iface.ssid="TP-LINK_6628"
+		OLD_SSID="$(uci -q get wireless.$iface.ssid 2>/dev/null)"
+		[ -z "$OLD_SSID" ] && uci -q set wireless.$iface.ssid="PonWrt_2G"
 	fi
 	changed=1
 done
