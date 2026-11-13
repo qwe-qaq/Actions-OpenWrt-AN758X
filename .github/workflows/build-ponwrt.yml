@@ -191,19 +191,6 @@ permissions:
   contents: write
   actions: write
 
-# =========================================================
-# 并发闸门：同一「源码 + 机型 + 范围」同时只允许跑一个
-#   不加的话，连点两次会同时发生：
-#     ① 抢同一个 Release tag（${DEVICE_NAME}-${REPO_BRANCH} 是固定值）
-#        → 两条通道互相 --clobber，后跑的覆盖先跑的；
-#     ② 抢同一个 actions/cache key（一个 key 只能存一次，第二个报 already exists）；
-#     ③ 第 22 步删旧资产时，把对方刚上传的那份也当「旧代」删掉；
-#     ④ profiles.json / sha256sum 与实际文件对不上（下载回来校验失败）。
-#   cancel-in-progress: false —— 构建是几小时的活，后到的排队而不是掐死前一个。
-# =========================================================
-concurrency:
-  group: build-ponwrt-${{ github.event.inputs.source || 'default' }}-${{ github.event.inputs.profile || 'all' }}-${{ github.event.inputs.scope || 'firmware' }}
-  cancel-in-progress: false
 
 jobs:
   build:
