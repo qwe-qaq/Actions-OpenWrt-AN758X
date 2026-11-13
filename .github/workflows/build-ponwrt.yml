@@ -39,7 +39,6 @@ env:
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
 
 on:
-  repository_dispatch:
   workflow_dispatch:
     inputs:
       source:
@@ -77,6 +76,7 @@ on:
           - unionman_ung00a
           - znxt_zn504xg-d
           - znxt_zn515xg-d
+          - h3c_hm2004-du
           - nokia_xg-040g-mf
           - nokia_xg-040g-mf-ubi
           - all
@@ -160,13 +160,16 @@ on:
           - 'false'
           - 'true'
 
-# 最小权限：发布阶段需要 contents: write；清理阶段需要 actions: read/write
+# 最小权限：workflow 默认 read；build job 的发布/缓存清理需要 write，按 job 单独授予
 permissions:
-  contents: write
-  actions: write
+  contents: read
+  actions: read
 
 jobs:
   build:
+    permissions:
+      contents: write
+      actions: write
     runs-on: ubuntu-24.04
     # 350 分钟接近 GitHub-hosted 6 小时上限；首次冷构建（工具链+全量 kmod）
     # 在 4 核 16G runner 上可能超时，建议拆出 toolchain-only 预热 job。
@@ -179,7 +182,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
       - name: Resolve device profile
@@ -257,12 +260,11 @@ jobs:
             xz-utils tar unzip zip zstd dos2unix ccache gettext \
             rsync file wget curl git subversion 2>/dev/null || true
 
-          # 初始化编译环境：建议将该脚本入仓并按 commit sha 校验，
-          # 避免 `curl | bash` 的供应链风险。
+          # 初始化编译环境：脚本已内置到仓库 scripts/，不再 `curl | bash` 远端执行。
           if [ -x "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" ]; then
             bash "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" || true
           else
-            sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)' || true
+            echo "::warning::scripts/init_build_environment.sh 缺失，跳过内置环境初始化"
           fi
 
           sudo -E apt-get -yqq autoremove --purge
@@ -336,7 +338,7 @@ jobs:
       - name: Restore build cache
         id: cache-restore
         if: env.USE_BUILD_CACHE == 'true' && env.IGNORE_CACHE != 'true'
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           key: ${{ steps.cache-key.outputs.key }}
           restore-keys: ${{ steps.cache-key.outputs.prefix }}-
@@ -477,7 +479,7 @@ jobs:
       - name: Restore dl cache
         id: dl-restore
         if: env.USE_DL_CACHE == 'true'
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         continue-on-error: true
         with:
           path: ${{ env.CACHE_ROOT }}/dl
@@ -540,10 +542,17 @@ jobs:
           
           echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
           
-          # 找 package-manager.js 文件
-          find build_dir/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
+          # 找 package-manager.js：LuCI 源码在 feeds/luci（真实目录）或
+          # package/feeds/luci（符号链接）；build_dir 要等编译后才生成，
+          # 编译前在 build_dir/ 查找必然空转，故不作为查找路径。
+          HITS=$(find -L feeds/luci package/feeds/luci -name "package-manager.js" \
+            -path "*/luci-app-package-manager/*" 2>/dev/null)
+          if [ -z "$HITS" ]; then
+            echo "::warning::未在 feeds/luci、package/feeds/luci 命中 package-manager.js，跳过按钮裁剪"
+          else
+          echo "$HITS" | while read f; do
             echo "  📄 处理: $f"
-            # 删除 "Update lists..." 按钮那一行 
+            # 删除 "Update lists..." 按钮那一行
             sed -i "/Update lists…/d" "$f"
             sed -i "/Download and install package/d" "$f"
             sed -i "/Package name or URL…/d" "$f"
@@ -556,6 +565,7 @@ jobs:
             # 移除已无入口的 handleManualInstall 死函数体（大括号配对整段删除）
             awk '/^function handleManualInstall\(ev\)/{in_fn=1;depth=0;next} in_fn{n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);if(c=="{")depth++;else if(c=="}")depth--}if(depth==0)in_fn=0;next} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
           done
+          fi
           
           echo "✅ 按钮已删除"
      
@@ -1061,7 +1071,7 @@ jobs:
           && (!cancelled())
           && steps.toolchain.outcome == 'success'
           && steps.cache-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         continue-on-error: true
         with:
           # -early 后缀：见上面的说明，不能和正式 key 相同，
@@ -1157,7 +1167,7 @@ jobs:
       # 16. SSH 调试（仅受控场景开启）
       # =========================================================
       - name: SSH connection to Actions
-        uses: mxschmitt/action-tmate@v3
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3
         # 调试入口默认关闭；仅当手动选择 ssh=true 且触发者为仓库所有者时才打开。
         # 保留 owner 校验：调试入口只对仓库所有者开放。
         if: >-
@@ -1213,7 +1223,7 @@ jobs:
           && env.USE_DL_CACHE == 'true'
           && steps.dl-restore.outputs.cache-hit != 'true'
           && steps.package.outcome == 'success'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         continue-on-error: true
         with:
           key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ env.REPO_BRANCH }}-${{ steps.resolve.outputs.week }}
@@ -1300,7 +1310,7 @@ jobs:
           && success()
           && steps.cache-restore.outputs.cache-hit != 'true'
           && (steps.compile.outcome == 'success' || steps.toolchain.outcome == 'success')
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         continue-on-error: true
         with:
           key: ${{ steps.cache-key.outputs.key }}
@@ -1378,7 +1388,7 @@ jobs:
       # 20. 上传 bin 目录
       # =========================================================
       - name: Upload bin directory
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin_${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -1400,7 +1410,7 @@ jobs:
           echo "status=success" >> "$GITHUB_OUTPUT"
 
       - name: Upload firmware directory
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware_${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -1453,7 +1463,7 @@ jobs:
           echo "status=success" >> "$GITHUB_OUTPUT"
 
       - name: Upload firmware to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         if: steps.tag.outputs.status == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1481,14 +1491,14 @@ jobs:
       # =========================================================
       - name: Delete workflow runs
         if: steps.compile.outputs.status == 'success'
-        uses: Mattraks/delete-workflow-runs@v2
+        uses: Mattraks/delete-workflow-runs@0cf693bc9909e5e867ee8f27b813224ba862939c # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           retain_days: 7
           keep_minimum_runs: 10
 
       - name: Remove old releases
-        uses: dev-drprasad/delete-older-releases@v0.3.4
+        uses: dev-drprasad/delete-older-releases@dfbe6be2a006e9475dfcbe5b8d201f1824c2a9fe # v0.3.4
         if: env.UPLOAD_RELEASE == 'true' && !cancelled()
         with:
           keep_latest: 10
@@ -1509,6 +1519,9 @@ jobs:
     # 只在构建成功、且确实存过缓存时才轮换，自动清理旧代
     if: ${{ needs.build.result == 'success' && needs.build.outputs.cache_key != '' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
     concurrency:
       group: ponwrt-cache-rollover-${{ github.ref }}-${{ needs.build.outputs.cache_prefix }}
       cancel-in-progress: false
@@ -1518,7 +1531,7 @@ jobs:
       KEY: ${{ needs.build.outputs.cache_key }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 

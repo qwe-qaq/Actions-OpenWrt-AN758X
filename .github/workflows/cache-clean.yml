@@ -35,11 +35,14 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  actions: read
 
 jobs:
   clean:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CACHE_RELEASE: cache-backup
@@ -47,7 +50,7 @@ jobs:
       PREFIX: ${{ github.event.inputs.prefix || '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
