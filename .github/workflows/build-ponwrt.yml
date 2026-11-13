@@ -1466,7 +1466,41 @@ jobs:
               echo "::endgroup::"
             fi
 
-            echo "::error::编译失败，完整日志见 artifact build-logs-${{ env.DEVICE_NAME }}-${{ github.run_id }}"
+            # =========================================================
+            # 写进 run 页面的 Summary（首屏可见），不依赖 artifact
+            #   artifact 只是 run 的附件：run 记录被删（清理旧记录 / 保留期到期），
+            #   artifact 一起消失，历史失败就彻底查不了了。Summary 跟着 run 页面走，
+            #   而且不用下载解压就能看到真实错误行。
+            # =========================================================
+            {
+              echo "## ❌ 编译失败：\`${DEVICE_NAME}\`"
+              echo ""
+              echo "| 项 | 值 |"
+              echo "| --- | --- |"
+              echo "| run | [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |"
+              echo "| profile | \`${PROFILE}\` |"
+              echo "| artifact | \`build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}\` ← run 页面最底部 **Artifacts** 区，保留 14 天 |"
+              echo ""
+              echo "### 真实错误行"
+              echo '```text'
+              grep -nE '(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)|unable to select packages|no such package|Image too big' \
+                "$LOGDIR/build.log" | tail -60 | tr -d '\r' || echo "(没匹配到 ERROR/Error 行，看下面末尾)"
+              echo '```'
+              echo ""
+              echo "### build.log 末尾 40 行"
+              echo '```text'
+              tail -40 "$LOGDIR/build.log" | tr -d '\r'
+              echo '```'
+              if [ -f "$LOGDIR/install.log" ]; then
+                echo ""
+                echo "### install.log（target/linux 单独重跑）末尾 60 行"
+                echo '```text'
+                tail -60 "$LOGDIR/install.log" | tr -d '\r'
+                echo '```'
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::error::编译失败 —— 真实错误行已写进 Summary（下方 Summary 标签页）；完整日志见 artifact build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}，run 页面地址 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             exit 1
           fi
 
