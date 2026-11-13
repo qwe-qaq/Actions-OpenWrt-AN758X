@@ -1,3 +1,7 @@
+name: Build PonWrt
+run-name: Build PonWrt #${{ github.run_attempt }}
+
+
 env:
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
@@ -533,9 +537,9 @@ jobs:
           echo "🔍 删除 LuCI 软件包页面的'更新列表'按钮..."
           
           # 找 package-manager.js 文件
-          find feeds/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
+          find build_dir/ -name "package-manager.js" -path "*/luci-app-package-manager/*" 2>/dev/null | while read f; do
             echo "  📄 处理: $f"
-            # 删除 "Update lists..." 按钮那一行
+            # 删除 "Update lists..." 按钮那一行 
             sed -i "/Update lists…/d" "$f"
             sed -i "/Download and install package/d" "$f"
             sed -i "/Package name or URL…/d" "$f"
@@ -547,11 +551,10 @@ jobs:
             sed -i "/'data-mode': 'installed'/s/cbi-tab-disabled/cbi-tab/" "$f"
             # 移除已无入口的 handleManualInstall 死函数体（大括号配对整段删除）
             awk '/^function handleManualInstall\(ev\)/{in_fn=1;depth=0;next} in_fn{n=length($0);for(i=1;i<=n;i++){c=substr($0,i,1);if(c=="{")depth++;else if(c=="}")depth--}if(depth==0)in_fn=0;next} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-          done    
+          done
           
           echo "✅ 按钮已删除"
-
-      
+     
       # =========================================================
       # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
       # =========================================================
@@ -799,7 +802,7 @@ jobs:
           # 保证随后 MISSING / OPT_MISS 校验看到的就是最终 .config。
           # =========================================================
           echo "🔒 defconfig 后补一次强制配置（幂等）..."
-                    for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
+          for pkg in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
                      firewall4 kmod-nft-fullcone luci-mod-status airoha-ponctl \
                      jsonfilter rpcd-mod-file luci-app-ssr-plus xray-core sing-box \
                      luci-app-iptv luci-i18n-iptv-zh-cn \
@@ -833,7 +836,6 @@ jobs:
           OPT_MISS=""
           for p in luci-app-airoha-npu luci-app-pon-status luci-app-natmode \
                    nlbwmon luci-app-nlbwmon mesh11sd; do
-
             if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
               OPT_MISS="$OPT_MISS $p"
               echo "::warning::${p} 在 defconfig 后未启用"
