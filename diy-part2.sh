@@ -105,7 +105,7 @@ fi
 
 # ---- 4b. 运行期：uci-defaults 首启强制刷 ----
 mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/96-wifi-5g-cn <<UCEOF
+cat > files/etc/uci-defaults/96-wifi-cn <<UCEOF
 #!/bin/sh
 # 无线 WiFi 默认值：2.4G/5G 国家码 CN、5G 信道 auto、频宽 160MHz
 # 由 diy-part2.sh 生成（编译期常量注入）
@@ -186,7 +186,7 @@ fi
 
 exit 0
 UCEOF
-chmod +x files/etc/uci-defaults/96-wifi-5g-cn
+chmod +x files/etc/uci-defaults/96-wifi-cn
 echo "✅ uci-defaults WiFi 脚本已写入"
 
 # ---- 4c. 确保 hostapd 支持 160MHz / 11ax ----
