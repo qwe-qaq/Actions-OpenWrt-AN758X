@@ -1,9 +1,5 @@
 name: Build PonWrt (Airoha AN758x PON)
 
-# =========================================================
-# 固件版本后缀（显示在 LuCI 概览页「固件版本」后面）
-#   FW_AUTHOR 是唯一真相源，改动请只改 env.FW_AUTHOR 这一处。
-# =========================================================
 env:
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'pbs05/ponwrt' }}
@@ -33,14 +29,8 @@ env:
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
-  # ---- 固件文件名时间戳 ----
-  #   true  = Artifact / Release 的文件名里插入构建时间（精确到秒，Asia/Shanghai）
-  #           ...-squashfs-sysupgrade-2026-11-13_133226(Shanghai).itb
-  #   false = 保持 OpenWrt 原始文件名
-  #   为什么是下划线+无冒号：actions/upload-artifact 禁止文件名含 `: " < > | * ? CR LF`，
-  #   带冒号会被整包拦下（NTFS/Windows 下载兼容性），所以统一用这个形态。
-  #   注意：改名后「同名覆盖」不再成立，历史资产会一直留在同一 Release 里，
-  #         本 workflow 不做任何删除，需要清理请手动删（单 Release 上限 1000 个资产）。
+  # 固件文件名插入构建时间戳。下划线无冒号：upload-artifact 拒绝 `: " < > | * ?`。
+  # 改名后同名覆盖失效，旧资产会累积在同一个 Release，需手动清理。
   FW_TS_NAME: 'true'
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
@@ -186,7 +176,7 @@ on:
           - 'false'
           - 'true'
 
-# 最小权限：发布阶段需要 contents: write；清理阶段需要 actions: read/write
+# contents:write 用于发布；actions:write 用于清理旧 run
 permissions:
   contents: write
   actions: write
@@ -195,11 +185,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # 350 分钟接近 GitHub-hosted 6 小时上限；首次冷构建（工具链+全量 kmod）
-    # 在 4 核 16G runner 上可能超时，建议拆出 toolchain-only 预热 job。
+    # 首次冷构建（工具链+全量 kmod）易超时，建议先跑 toolchain-only 预热
     timeout-minutes: 350
 
-    # 传给 cache-rollover：它只负责删旧代，不重新算 key
+    # 供 cache-rollover 删旧代，它不重算 key
     outputs:
       cache_prefix: ${{ steps.cache-key.outputs.prefix }}
       cache_key: ${{ steps.cache-key.outputs.key }}
@@ -218,15 +207,10 @@ jobs:
           PROFILE="${PROFILE}"
           SOC="${SOC}"
 
-          # 缓存版本号：按「年+周」滚动（如 202639）。
-          # 用途：dl / ccache 的 key 用它替代 run_id、run_number。
-          # 若用 run_* ，每次运行都会 save 一份新副本，10GB 配额很快被
-          # 刷满并淘汰掉真正有用的旧缓存；改用周号后同一周内复用同一条目。
+          # 用「年+周」做缓存版本号：用 run_id 会每轮存一份新副本，刷爆 10GB 配额
           echo "week=$(date +%Y%W)" >> "$GITHUB_OUTPUT"
 
-          # AN4475-G2 的板级 DTS / profile 目前在 qwe-qaq/ponwrt@master
-          # （本仓库的 fork 源码）。用 pbs05/ponwrt 时该 TARGET_DEVICE
-          # 符号不存在，Validate configuration 会直接失败，这里提前说明。
+          # AN4475-G2 的板级支持只在 qwe-qaq/ponwrt（source=fork）
           if [ "$PROFILE" = "fiberhome_an4475-g2" ] && [ "${SOURCE}" != "fork" ]; then
             echo "::warning::AN4475-G2 的板级支持在 qwe-qaq/ponwrt（source=fork），当前 ${SOURCE} 尚无该 profile；请把 source 选为 fork"
           fi
@@ -241,16 +225,10 @@ jobs:
           # 若传入的 soc 与机型冲突，以机型为准
           echo "SOC=$SOC" >> "$GITHUB_ENV"
           echo "PROFILE=$PROFILE" >> "$GITHUB_ENV"
-          # 末尾带上 host 模式：source / prebuilt 两条线并行跑时，固件与
-          # artifact 不再互相覆盖。
-          # DEVICE_NAME 同时决定下面三处，改这一个地方就够：
-          #   · artifact 名 OpenWrt_firmware_${DEVICE_NAME}${FILE_DATE}
-          #   · Release tag  ${DEVICE_NAME}-${REPO_BRANCH}
-          #   · 旧 tag 清理   delete_tag_pattern: ^${DEVICE_NAME}-
-          # 固件文件名前缀由 OpenWrt 的 CONFIG_VERSION_DIST 决定；文件名尾部会
-          # 由「Stamp firmware filenames」步骤追加构建时间（见 env.FW_TS_NAME）。
+          # DEVICE_NAME 同时决定 artifact 名 / Release tag / 旧 tag 清理三处；
+          # 末尾带 host 模式，source 与 prebuilt 并行时产物不互相覆盖。
           echo "DEVICE_NAME=ponwrt-${SOC}-${PROFILE}-${HOST_MODE}" >> "$GITHUB_ENV"
-          # 每机型一份 config；profile=all 时回退到 SoC 通用配置
+          # profile=all 用 SoC 通用配置
           if [ "$PROFILE" = "all" ]; then
             echo "CONFIG_FILE=configs/${SOC}.config" >> "$GITHUB_ENV"
           else
@@ -267,9 +245,6 @@ jobs:
           echo "Crypto   : ARM64CE=${OPT_CRYPTO_ARM64CE} CHACHA=${OPT_CRYPTO_CHACHA} EIP93=${OPT_CRYPTO_EIP93}"
           echo "========================================"
 
-      # =========================================================
-      # 1. 释放空间 + 初始化编译环境
-      # =========================================================
       - name: Free disk space & init build environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -281,7 +256,7 @@ jobs:
           sudo docker image prune --all --force 2>/dev/null || true
           sudo -E apt-get -yqq purge firefox snapd 2>/dev/null || true
 
-          # --- 配置 8G Swap (aarch64 工具链/内核编译需要) ---
+          # 8G Swap：aarch64 工具链/内核编译需要
           sudo swapoff -a 2>/dev/null || true
           sudo rm -f /swapfile
           sudo fallocate -l 8G /swapfile
@@ -295,8 +270,7 @@ jobs:
             xz-utils tar unzip zip zstd dos2unix ccache gettext \
             rsync file wget curl git subversion 2>/dev/null || true
 
-          # 初始化编译环境：建议将该脚本入仓并按 commit sha 校验，
-          # 避免 `curl | bash` 的供应链风险。
+          # 优先用入仓脚本，避免 curl|bash 的供应链风险
           if [ -x "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" ]; then
             bash "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" || true
           else
@@ -307,19 +281,14 @@ jobs:
           sudo -E apt-get -yqq clean
           sudo -E timedatectl set-timezone "$TZ"
 
-          # --- 编译根目录（固定 /workdir，与 workflow 级 env 保持一致）---
-          # 注意：BUILD_ROOT 必须是 workflow 级静态变量，不能用 GITHUB_ENV 动态写入，
-          # 否则 actions/cache 的 with.path 里 ${{ env.BUILD_ROOT }} 会解析成空串，
-          # dl 缓存命中不到 /openwrt/dl，导致工具链编译时源码包缺失。
+          # BUILD_ROOT 必须是 workflow 级静态值：写成 GITHUB_ENV 后，
+          # cache 的 path 里 ${{ env.BUILD_ROOT }} 会解析成空串，dl 缓存全部 miss。
           sudo mkdir -p /workdir
           sudo chown "$USER":"$USER" /workdir
 
           echo "磁盘空间:"; df -hT
           echo "内存/Swap:"; free -h
 
-      # =========================================================
-      # 2. 克隆源码
-      # =========================================================
       - name: Clone source code
         run: |
           cd "$BUILD_ROOT"
@@ -327,28 +296,19 @@ jobs:
           git clone "$REPO_URL" -b "$REPO_BRANCH" --single-branch --depth=1 openwrt
           ln -sf "$BUILD_ROOT/openwrt" "$GITHUB_WORKSPACE/openwrt"
 
-          # 输入项为空时回退到 workflow 级默认值，确保 diy-part2.sh 拿到的
-          # 始终是确定值，而不是空串（空串会让 LuCI 概览页显示 "·  ·"）。
+          # 输入为空时回退默认值，别让 diy-part2.sh 拿到空串
           echo "FW_AUTHOR=${FW_AUTHOR:-qwe}" >> "$GITHUB_ENV"
 
-          # 加密开关同样固化一遍：写进 GITHUB_ENV 后，即便哪天 workflow 级
-          # env 表达式改了，本 job 后续步骤读到的仍是本次解析出的确定值。
           echo "OPT_CRYPTO_ARM64CE=${OPT_CRYPTO_ARM64CE}" >> "$GITHUB_ENV"
           echo "OPT_CRYPTO_CHACHA=${OPT_CRYPTO_CHACHA}" >> "$GITHUB_ENV"
           echo "OPT_CRYPTO_EIP93=${OPT_CRYPTO_EIP93}" >> "$GITHUB_ENV"
 
           cd openwrt && echo "commit: $(git rev-parse --short HEAD)"
-          # .ccache 目录先建出来：actions/cache 对「path 不存在」的条目会跳过，
-          # 建个空目录让路径始终有效（USE_CCACHE=false 时它就一直空着）
+          # 先建空目录：actions/cache 遇到不存在的 path 会跳过该条目
           mkdir -p .ccache
 
-      # =========================================================
-      # 2.1 构建缓存：算 key（移植自 OpenWRT-CI）
-      #
-      #   key = ponwrt-<源站>-<分支>-<SoC>-<上游提交号>
-      #   前缀只由「源站 + 分支 + SoC」决定，机型不进前缀 ——
-      #   同一 SoC 下所有机型共用一份 host/toolchain 缓存。
-      # =========================================================
+      # 缓存 key = ponwrt-<源站>-<分支>-<SoC>-<上游提交号>
+      # 机型不进前缀，同一 SoC 共用一份 host/toolchain 缓存。
       - name: Compute cache key
         id: cache-key
         run: |
@@ -358,19 +318,11 @@ jobs:
           chmod +x "$S"
           bash "$S" key "$CACHE_ROOT"
 
-          # dl 缓存的 key 里不能出现 `/`：SOURCE 形如 pbs05/ponwrt，直接拼进去会
-          # 得到 ponwrt-dl-pbs05/ponwrt-master-202643，和工具链 key
-          # （ponwrt-pbs05-ponwrt-...，经 pwrt-cache.sh 的 slug() 处理）风格不一致，
-          # 将来按前缀批量清理时容易漏。这里用同一条规则预先 slug 一次。
+          # dl key 统一 slug：SOURCE 带 `/`，写法不一致会让按前缀批量清理漏掉
           echo "SOURCE_SLUG=$(printf '%s' "${SOURCE:-unknown}" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_ENV"
 
-      # =========================================================
-      # 2.2 构建缓存：恢复
-      #   key 精确到提交号，restore-keys 用前缀 + "-" 回退 —— 有它才有
-      #   「提交号变了仍命中上一代」，缓存随每次构建自动向前滚动。
-      # ⚠ host* 同时覆盖 host 与 hostpkg（go / python 在这），tool* 覆盖
-      #   toolchain-*。不缓存 target-*：那是固件包安装产物，每次都要重来。
-      # =========================================================
+      # 恢复构建缓存：restore-keys 用前缀+"-"回退，提交号变了也能命中上一代。
+      # ⚠ 只缓存 host*/tool*，不缓存 target-*（固件包产物每轮都要重来）。
       - name: Restore build cache
         id: cache-restore
         if: env.IGNORE_CACHE != 'true'
@@ -383,13 +335,7 @@ jobs:
             ${{ env.CACHE_ROOT }}/staging_dir/host*
             ${{ env.CACHE_ROOT }}/staging_dir/tool*
 
-      # =========================================================
-      # 2.3 Release 备份通道（① 没命中才走）
-      #   7 天回收卡的是「最后访问」而不是「创建」，仓库常常停摆一周以上，
-      #   快通道会空；此时从 Release 取，仍然不用冷编译。
-      # ⚠ 取该前缀下最新的一份（与前缀回退同义），且先传新的再删旧的，
-      #   任何时刻都至少有一份在。
-      # =========================================================
+      # Release 备份通道：actions/cache 7 天无访问即回收，仓库停摆就靠它兜底
       - name: Restore cache from Release backup
         id: release-restore
         if: >-
@@ -432,8 +378,7 @@ jobs:
           if bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" unpack "$CACHE_ROOT" "./$ASSET"; then
             rm -f "./$ASSET"
             echo "restored=true" >> "$GITHUB_OUTPUT"
-            # 资产名就是 <key>.tzst，去掉后缀还原出 key —— 只有它与本次 key 完全
-            # 相等，「恢复到的这份缓存 = 当前提交编出来的」才成立，才能判精确命中。
+            # 资产名去掉 .tzst 等于本次 key，才算「这份缓存就是当前提交编的」
             echo "restored_key=${ASSET%.tzst}" >> "$GITHUB_OUTPUT"
             echo "✅ 已从 Release 备份恢复: $ASSET"
           else
@@ -442,15 +387,8 @@ jobs:
             echo "::warning::解压 $ASSET 失败，走真编译"
           fi
 
-      # =========================================================
-      # 2.4 恢复之后：让 make 认账
-      #
-      #   刷新非 target 的 stamp + 写 tmp/.build。
-      #   漏了这一步，make 会因为「源码树比产物新」把工具链重编一遍，
-      #   日志却显示 Cache restored successfully —— 白命中。
-      #
-      #   两条通道谁命中都要走这一步，所以条件是二者的或。
-      # =========================================================
+      # 恢复后让 make 认账：刷新非 target 戳 + 写 tmp/.build。
+      # 漏了这步 make 会重编工具链，日志却显示 Cache restored —— 假命中。
       - name: Prepare restored build cache
         if: >-
           env.IGNORE_CACHE != 'true'
@@ -458,10 +396,7 @@ jobs:
               || steps.release-restore.outputs.restored == 'true')
         env:
           RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
-          # 精确 = 「这份缓存就是当前这个提交编出来的」。两条通道都算：
-          #   actions/cache  cache-hit=true（key 完全相等）
-          #   Release 备份   资产名去掉 .tzst 后 == 本次 key
-          # 前缀回退 / Release 取到旧代都不算，源码比缓存新，必须让 make 重编。
+          # 精确命中 = 缓存就是这个提交编的；前缀回退 / 旧代都不算，必须重编
           CACHE_EXACT: ${{ (steps.cache-restore.outputs.cache-hit == 'true' || (steps.release-restore.outputs.restored_key != '' && steps.release-restore.outputs.restored_key == steps.cache-key.outputs.key)) && 'true' || 'false' }}
         run: |
           cd "$CACHE_ROOT"
@@ -499,11 +434,7 @@ jobs:
           echo "backend=$R1" >> "$GITHUB_OUTPUT"
           echo "luci=$R2" >> "$GITHUB_OUTPUT"
 
-          # 只把「私有」的仓库放进令牌白名单。
-          # ⚠ 踩过的坑：repositories 里写了一个 App 没安装的仓库（哪怕是公开仓库），
-          #   令牌申请直接 422 —— "at least one repository that does not exist or
-          #   is not accessible to the parent installation"。公开仓库本来就不需要
-          #   令牌，列进去纯属给自己找麻烦。
+          # 只把私有仓库加进令牌白名单：列了 App 未安装的仓库（哪怕公开）会直接 422
           TOKEN_REPOS=""
           add_repo() {  # add_repo <public|private> <owner/repo>
             [ "$1" = "private" ] || return 0
@@ -598,11 +529,8 @@ jobs:
           printf '%s' "$TOKEN" > "$TOKEN_FILE"
           chmod 600 "$TOKEN_FILE"
 
-          # ⚠ 写 $GITHUB_ENV 只对【后续步骤】生效，本步骤当前进程看不见！
-          #   下面紧跟的带凭证复检就在本步骤里跑，所以必须同时 export 一份，
-          #   否则 askpass 拿到空的 GH_TOKEN_FILE，报
-          #   "unable to read askpass response ... terminal prompts disabled"。
-          #   GIT_ASKPASS 是上一步写进 GITHUB_ENV 的，本步骤已经能读到。
+          # ⚠ GITHUB_ENV 只对后续步骤生效，本步骤必须自己 export 一份，
+          # 否则 askpass 拿到空路径，报 "unable to read askpass response"。
           export GH_TOKEN_FILE="$TOKEN_FILE"
           export GIT_ASKPASS="${GIT_ASKPASS:-$RUNNER_TEMP/git-askpass}"
           echo "GH_TOKEN_FILE=$TOKEN_FILE" >> "$GITHUB_ENV"
@@ -615,13 +543,11 @@ jobs:
           fi
           echo "  askpass 自检通过（令牌长度 ${#ASK}，值不打印）"
 
-          # checkout 注入的 extraheader 会直接盖掉 askpass 的凭证（本地 config 优先级最高）。
-          # persist-credentials: false 已让 checkout 不再写入，这里双保险清一下。
+          # checkout 注入的 extraheader 会盖掉 askpass，双保险清掉
           git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
           git config --local  --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
-          # 3) 带凭证复检：只复检「探测判定为私有」的仓库，公开的不碰
-          #    （公开仓库带令牌也能过，但没必要，且会掩盖配置问题）
+          # 只复检探测判定为私有的仓库：公开的带令牌也能过，但会掩盖配置问题
           FAIL=0
           for pair in "${{ steps.probe.outputs.backend }}:${PRIVATE_REPO}:${PRIVATE_REPO_BRANCH}" \
                       "${{ steps.probe.outputs.luci }}:${FTTR_LUCI_REPO}:${FTTR_LUCI_BRANCH}"; do
@@ -657,13 +583,8 @@ jobs:
 
           exit "$FAIL"
 
-      # =========================================================
-      # 3. dl 下载缓存（源码包，2~5 GB）
-      # ⚠ 不能用 actions/cache 的 save-always（v5 已 deprecated，原文
-      #   "does not work as intended"，实际仍走 post-if: success()）——
-      #   构建一失败，这一趟下的几个 G 就白下了。所以显式 restore + save。
-      #   key 按周滚动、前缀回退，轮换只留最新一份（dl 只增不减，新的是超集）。
-      # =========================================================
+      # dl 下载缓存（2~5 GB）。不用 save-always（v5 已失效），显式 restore+save，
+      # 否则构建一失败，这一趟下的几个 G 就白下了。
       - name: Restore dl cache
         id: dl-restore
         if: env.USE_DL_CACHE == 'true'
@@ -671,22 +592,13 @@ jobs:
         continue-on-error: true
         with:
           path: /workdir/openwrt/dl
-          # 按分支 + 周号：同一周内复用同一条目。
-          # 原先用 github.run_number → 每次运行都 save 一份新副本，
-          # 10GB 配额会被迅速刷满并淘汰掉有用的旧缓存。
-          # ⚠ 用 SOURCE_SLUG（`pbs05/ponwrt` → `pbs05-ponwrt`），别用 SOURCE：
-          #   key 里带 `/` 本身能存，但与工具链 key 的写法不一致，后续按前缀
-          #   批量操作会漏掉这一条。
+          # 按分支+周号复用同一条目；key 里用 SOURCE_SLUG，别用带 `/` 的 SOURCE
           key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
-          # 第二条是旧格式（SOURCE 原值，带斜杠）：只为平滑迁移，本轮拿到本周
-          # 那份 1.2 GB 后会按新格式存一份，旧的 7 天无访问自动回收。下版可删。
+          # 第二条是旧格式（SOURCE 原值），只为平滑迁移，下版可删
           restore-keys: |
             ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-
             ponwrt-dl-${{ env.SOURCE }}-${{ github.event.inputs.branch || 'master' }}-
 
-      # =========================================================
-      # 4. 更新并安装 Feeds
-      # =========================================================
       - name: Update & install feeds
         run: |
           cd "$BUILD_ROOT/openwrt"
@@ -696,23 +608,14 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # =========================================================
-      # 5. diy-part1.sh —— 拉取可选插件
-      # =========================================================
       - name: Pull optional plugins (diy-part1.sh)
         run: |
           cd "$BUILD_ROOT/openwrt"
           chmod +x "$GITHUB_WORKSPACE/$DIY_P1_SH"
           "$GITHUB_WORKSPACE/$DIY_P1_SH"
 
-      # =========================================================
-      # 5.5 放宽 rust 包的「禁止联网」（--frozen / --offline）
-      #   dl/cargo 是从缓存继承的（只增不减），上游在 Cargo.lock 加新依赖时
-      #   缓存里没有 → `--frozen` 不给补救机会，编到 rust 包必挂：
-      #     failed to download `core_detect v1.0.0`
-      #   只摘「禁止联网」，--locked 保留（版本仍锁死，结果可复现）。
-      #   必须在 diy-part1 之后（私有包是那一步 clone 进来的）。
-      # =========================================================
+      # 摘掉 cargo 的 --frozen/--offline：dl/cargo 缓存只增不减，
+      # 上游加新依赖时缓存里没有，不留联网补救会直接编挂。--locked 保留。
       - name: Relax cargo offline flags
         continue-on-error: true
         run: |
@@ -723,9 +626,6 @@ jobs:
           bash "$S" "$BUILD_ROOT/openwrt"
 
 
-      # =========================================================
-      # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
-      # =========================================================
       - name: Load custom configuration
         run: |
           cd "$BUILD_ROOT/openwrt"
@@ -747,9 +647,6 @@ jobs:
             exit 1
           fi
 
-      # =========================================================
-      # 7. 按机型裁剪: 只保留一个 TARGET_DEVICE
-      # =========================================================
       - name: Apply device profile
         run: |
           cd "$BUILD_ROOT/openwrt"
@@ -767,12 +664,8 @@ jobs:
             echo "已裁剪为: CONFIG_TARGET_DEVICE_airoha_${SOC}_DEVICE_${PROFILE}=y"
           fi
 
-      # =========================================================
-      # 8. diy-part2.sh —— 时区改为中国、写入固件版本后缀
-      #     ★ 加密可选包就在这一步注入（diy-part2.sh 末尾 source 我们的脚本）。
-      #       必须早于步骤 9 的 make defconfig，否则内核符号写完就被
-      #       defconfig 重新展开覆盖掉了。
-      # =========================================================
+      # diy-part2.sh：时区 + 固件版本后缀，加密可选包也在这里注入。
+      # 必须早于 defconfig，否则写进 .config 的符号会被重新展开覆盖。
       - name: Set timezone to China (diy-part2.sh)
         run: |
           cd "$BUILD_ROOT/openwrt"
@@ -782,22 +675,14 @@ jobs:
           WIFI_5G_HTMODE="$WIFI_5G_HTMODE" WIFI_5G_FALLBACK="$WIFI_5G_FALLBACK" \
             "$GITHUB_WORKSPACE/$DIY_P2_SH"
 
-          # 可选包是否被 defconfig 接受，要等步骤 9 之后才知道；
-          # 这里先记下期望值，步骤 9 末尾做一次对照。
+          # 期望值先记下，defconfig 之后回来对照
           echo "WANT_ARM64CE=${OPT_CRYPTO_ARM64CE}" >> "$GITHUB_ENV"
           echo "WANT_CHACHA=${OPT_CRYPTO_CHACHA}"   >> "$GITHUB_ENV"
           echo "WANT_EIP93=${OPT_CRYPTO_EIP93}"     >> "$GITHUB_ENV"
 
-      # =========================================================
-      # 9. defconfig + 校验机型
-      #    【唯一一次 defconfig】后续不再调用，避免 .config 被重新展开、
-      #    机型配置里写死的选择被静默剔除。
-      # =========================================================
-      # ★ 用 runner 预装工具替代源码编译（OpenWRT-CI 核心思路）：
-      #   Go external bootstrap 省 40~70 分钟、Rust prebuilt 省 30~60 分钟。
-      # ⚠ 必须在 make defconfig 之前 —— 脚本写进 .config 的项要由 defconfig 展开。
-      #   全部软失败：ponwrt 不支持时只 warning，退回源码编译。
-      # =========================================================
+      # 用 runner 预装的 Go/Rust 替代源码编译（prebuilt_host=true）。
+      # 必须在 defconfig 之前 —— 脚本写进 .config 的项要由 defconfig 展开。
+      # 全部软失败：ponwrt 不支持时只 warning，退回源码编译。
       - name: Prepare host toolchain (Go / BPF / Python)
         if: env.PREBUILT_HOST == 'true'
         continue-on-error: true
@@ -819,39 +704,21 @@ jobs:
           bash "$S" "$BUILD_ROOT/openwrt"
 
 
-      # =========================================================
-      # 9. defconfig + 配置校验
-      #
-      #    【唯一一次 defconfig】后续步骤不再调用，避免 .config 被重新展开、
-      #    机型配置里显式写死的选择被静默剔除。
-      #
-      #    ★ 这里不再算缓存 key 了 —— key 在 2.1 就算好（提交号 + 前缀），
-      #      恢复缓存在 2.2 也已经做完。缓存与 .config 彻底解耦，
-      #      配置怎么改都不会让缓存失效，这正是移植过来的那套的关键。
-      # =========================================================
+      # 唯一一次 defconfig（后续不再调用，避免写死的配置被重新展开剔除）。
+      # 缓存 key 在恢复之前就算完，配置怎么改都不会让缓存失效。
       - name: Validate configuration
         id: validate
         run: |
           cd "$BUILD_ROOT/openwrt"
 
-          # diffconfig(精简配置) 必须 defconfig 展开。
-          #
-          # ⚠ 不要写成 `make defconfig 2>&1 | tail -5`：
-          #   管道退出码取的是 tail 的 0，defconfig 失败会被吞掉，
-          #   紧接着的关键包校验就会拿「半展开的 .config」报
-          #   「检查 feeds 是否完整」—— 指向完全错误的方向。
-          #   scripts/defconfig.sh 负责：失败 → 打真日志 + exit 1；
-          #   成功 → 只打尾部 5 行，另把 WARNING 汇总出来
-          #   （WARNING 正是「包被静默剔除」的第一现场）。
+          # ⚠ 不要 `make defconfig 2>&1 | tail -5`：退出码取的是 tail 的 0，失败被吞，
+          # 后面就会拿半展开的 .config 报「检查 feeds 是否完整」，方向全错。
           S="$GITHUB_WORKSPACE/scripts/defconfig.sh"
           [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
           dos2unix "$S" 2>/dev/null || true
           bash "$S" "$PWD"
 
-          # =========================================================
-          # 关键包校验：defconfig 会把 feeds 里不存在的包静默剔除，
-          # 这里显式确认 PON 核心链路还在，否则编出来光口不通
-          # =========================================================
+          # 关键包校验：defconfig 会静默剔除 feeds 里不存在的包，光口链路必须还在
           MISSING=""
           for p in kmod-airoha-xpon kmod-airoha-pon-frontend airoha-pond airoha-ponctl luci-app-pon; do
             if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
@@ -864,11 +731,7 @@ jobs:
           fi
           echo "✅ PON 关键包校验通过"
 
-          # =========================================================
-          # 状态插件校验：第三方包若在 package/custom 里缺失，
-          # defconfig 会把 .config 里的 =y 当无效符号静默删除，
-          # 编完发现界面里没这个菜单时才察觉就晚了
-          # =========================================================
+          # 状态插件校验：第三方包缺失时 =y 被当无效符号删掉，界面里就少菜单
           OPT_MISS=""
           for p in luci-app-airoha-npu luci-app-pon-status luci-app-natmode luci-app-igmpproxy; do
             if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
@@ -890,25 +753,10 @@ jobs:
           fi
           echo "✅ 状态插件校验通过"
 
-          # =========================================================
-          # 设备包闭环校验：DEVICE_PACKAGES ──> CONFIG_PACKAGE_*=y
-          #
-          #   为什么必须查这一条（an4475-g2 那次炸的就是它）：
-          #   image/an7581.mk 里的 DEVICE_PACKAGES 并不是直接装包，而是经
-          #   scripts/target-metadata.pl 变成一句 select：
-          #       select DEFAULT_kmod-phy-motorcomm
-          #   再由 scripts/package-metadata.pl 生成的规则兜住：
-          #       config PACKAGE_kmod-phy-motorcomm
-          #         default y if DEFAULT_kmod-phy-motorcomm
-          #   也就是说「元数据 → kconfig 符号」这一跳一旦是旧的
-          #   （tmp/.targetinfo 或 tmp/.config-package.in 没重建、
-          #    .packageinfo 里没这个包），select 就指空，包静默消失，
-          #   全程零报错 —— 直到 target/linux install 阶段：
-          #   include/image.mk 的 apk 路径是 `apk add $(mkfs_packages_add)`，
-          #   【没有】opkg 那条 opkg_package_files 过滤逻辑，缺一个包就直接
-          #   `ERROR: target/linux failed to build.`（真错误还被 subdir.mk 折叠）。
-          #   放在这里，几小时的 world 变成几十秒的结论，且直接点名是哪个包。
-          # =========================================================
+          # 设备包闭环校验（DEVICE_PACKAGES → CONFIG_PACKAGE_*=y）：
+          #   DEVICE_PACKAGES 经 target-metadata 变成 select DEFAULT_<pkg>，
+          #   元数据陈旧就指空、包静默消失，直到 image.mk 的 apk 路径
+          #   `apk add`（不过滤缺包）才硬失败。提前几十秒点名，别等 5 小时。
           if [ "$PROFILE" != "all" ]; then
             TI=tmp/.targetinfo
             if [ ! -f "$TI" ]; then
@@ -935,9 +783,7 @@ jobs:
                 case "$p" in -*) continue ;; esac      # DEVICE_PACKAGES 里的 -pkg 是移除项
                 p=${p%%:*}                              # 去掉 pkg:variant 的变体后缀
                 CHK=$(( CHK + 1 ))
-                # =y 装进镜像；=m 只编成 .apk（镜像组装时 apk add 仍能取到）——
-                # 两者都算「这个包会被编出来」。真正致命的是符号整个不存在，
-                # 即 config 里连 "# CONFIG_PACKAGE_x is not set" 都没有。
+                # =y 与 =m 都算「会编出来」；符号整个不存在才致命
                 if grep -qx "CONFIG_PACKAGE_${p}=y" .config; then
                   continue
                 elif grep -qx "CONFIG_PACKAGE_${p}=m" .config; then
@@ -973,15 +819,8 @@ jobs:
             fi
           fi
 
-          # =========================================================
-          # 代理插件校验（只警告，不阻断）
-          #
-          #   这是「源码拉下来了、索引里有、固件里却没这个菜单」的那个坑：
-          #   ① kconfig 只认 CONFIG_PACKAGE_x=y，行首带 '#' 等于没写；
-          #   ② profile=<机型> 时只读 configs/<机型>.config，
-          #      configs/<SoC>.config 完全不参与。
-          #   两条凑一起，全程一句报错都没有。
-          # =========================================================
+          # 代理插件校验（只警告）：kconfig 只认 CONFIG_PACKAGE_x=y，
+          # 且 profile=<机型> 时 configs/<SoC>.config 完全不参与。
           PROXY_MISS=""
           for p in luci-app-passwall xray-core sing-box; do
             grep -qx "CONFIG_PACKAGE_${p}=y" .config || PROXY_MISS="$PROXY_MISS $p"
@@ -998,14 +837,8 @@ jobs:
             echo "::warning::luci-i18n-airoha-npu-zh-cn 未启用（po/zh_Hans 未注入？界面将为英文）"
           fi
 
-          # =========================================================
-          # 加密可选包复核（只警告不阻断）
-          #   defconfig 会把源码树里不存在的包当无效符号静默删掉。
-          #   PonWrt 基于 ImmortalWrt，kmod-crypto-hw-eip93 是否随
-          #   target/linux 的 crypto.mk 一起带过来取决于内核版本：
-          #   ≥6.18 走主线 inside-secure/eip93，<6.18 走 mtk-eip93，
-          #   两种都没有就整个包不存在。这里如实报，别让"编译成功"骗过去。
-          # =========================================================
+          # 加密可选包复核（只警告）：源码树里没有的包会被 defconfig 静默删掉，
+          # 别让「编译成功」骗过去。
           echo "===== 加密可选包复核 ====="
           if [ "${WANT_EIP93}" = "1" ] && ! grep -q "^CONFIG_PACKAGE_kmod-crypto-hw-eip93=y" .config; then
             echo "::warning::kmod-crypto-hw-eip93 未编入 —— 当前源码树不带该包（内核版本或 target 不含 EIP93）。不影响其余构建。"
@@ -1040,11 +873,8 @@ jobs:
           echo "CONFIG_TARGET_BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d'"' -f2)"
           echo "CONFIG_TARGET_SUBTARGET=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)"
 
-      # =========================================================
-      # 9.5 下载工具链源码 —— 只在缓存没恢复出工具链时才需要
-      #     报错 "Can't open dl/musl-1.2.6.tar.gz" 就是这一步缺失导致的：
-      #     make toolchain/install 不会自动补下载，只会去解压 dl 里已有的包
-      # =========================================================
+      # 补下工具链源码。make toolchain/install 不会自动补下载，
+      # dl 里缺 musl/gcc/binutils 时就是靠这一步（报 "Can't open dl/musl-*.tar.gz"）。
       - name: Download toolchain sources
         if: >-
           env.IGNORE_CACHE == 'true'
@@ -1084,12 +914,8 @@ jobs:
           fi
           echo "✅ 工具链源码校验通过"
 
-      # =========================================================
-      # 10. 编译工具链 —— 只在缓存没给出工具链时才动手
-      #   判断依据只有一个：2.2 拿到的 cache-matched-key。命中（含前缀回退）
-      #   就整段跳过，没命中才编。
-      # ⚠ 别改回「按指纹是否相等」：两端算不齐就等于永远冷编译，无自愈路径。
-      # =========================================================
+      # 只有缓存没给出工具链时才编。判据是 cache-matched-key 命中与否，
+      # 别改回「比指纹」—— 两端算不齐就永远是冷编译，没有自愈路径。
       - name: Build tools & toolchain
         id: toolchain
         if: >-
@@ -1104,23 +930,14 @@ jobs:
           make toolchain/install -j"$(nproc)" || make toolchain/install -j1 V=s || {
             echo "::error::toolchain 编译失败"; exit 1; }
 
-          # 让后续 make 认账：写 tmp/.build 就够了。
-          # ⚠ 不要 touch tools/stamp-compile / toolchain/stamp-compile —— 那俩是
-          #   make 变量（stampfile 宏），不是文件。造同名空文件只会被
-          #   scripts/timestamp.pl 的 find -newer 命中，判定「源码变了」，
-          #   于是下一轮白重编 tools + toolchain（实测 +26 分钟）。
-          #   真正的戳是 staging_dir/host/stamp/.tools_compile_*，
-          #   make install 自己会写，这里不用管。
+          # 让后续 make 认账只需写 tmp/.build。
+          # ⚠ 别 touch tools/stamp-compile：那是 make 变量不是文件，
+          # 造同名空文件会让 timestamp.pl 判定源码变了，白重编 +26 分钟。
           mkdir -p tmp && echo 1 > tmp/.build
 
-      # =========================================================
-      # 10.02 host 侧 go / rust 从源码真实编译（prebuilt_host=false）
-      #   golang / rust 是 package 不是 tools，tools/install 与 toolchain/install
-      #   都不含它们，只在 package/compile（固件那 5~6 小时）里被带出来 →
-      #   ① toolchain-only 这趟建不全缓存 ② 首次多扛 1.5 小时、顶到 350 分钟上限。
-      # ⚠ 只能写 host/compile（没有 host/install 目标）：host-build.mk 的链是
-      #   host-compile → $(HOST_STAMP_INSTALLED) → Host/Install，产物自动进 staging_dir。
-      # =========================================================
+      # host 侧 go/rust 从源码编（prebuilt_host=false）。
+      # golang/rust 是 package 不是 tools，只在 package/compile 里被带出来，
+      # toolchain-only 这趟因此建不全缓存。只能写 host/compile，没有 host/install。
       - name: Build host go/rust from source
         id: host-src
         if: >-
@@ -1134,9 +951,7 @@ jobs:
           JOBS=$(nproc)
 
           for p in golang-bootstrap golang rust; do
-            # ⚠ -L 必须有：package/feeds/packages/* 是指向 feeds/packages/lang/*
-            #   的符号链接，find 默认不跟随，-type d 也不匹配符号链接本身，
-            #   结果连 package/feeds/packages/golang 都找不到 —— 三个包全被跳过。
+            # ⚠ 必须 -L：package/feeds/packages/* 是符号链接，find 默认不跟随
             rel=$(find -L package -maxdepth 4 -type d -name "$p" 2>/dev/null | head -1)
             [ -z "$rel" ] && { echo "::warning::树里没有 $p，跳过"; continue; }
 
@@ -1161,29 +976,14 @@ jobs:
             fi
           done
 
-          # ★ 立刻把 build_dir 的 host 戳冻一份（source 模式专用）。
-          #   为什么不等编译结束：后面还有最长 200 分钟的编译，一旦超时或失败，
-          #   存下来的缓存就没有戳，下一轮 go/rust 又要自举一遍。
-          #   编译结束后还会再冻一次，覆盖 target 阶段新编出来的 host 包。
+          # ★ 立刻冻一次 build_dir 戳：后面还有最长 200 分钟的编译，超时就没戳了
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
-      # =========================================================
-      # 10.05 ★ 工具链一编完就存一次（不等编译结束）
-      #   350 分钟一到 GitHub 直接 cancel job，排在编译后面的 Save 根本没机会跑，
-      #   1~1.5 小时的工具链就白编了。
-      #   代价：本次编译期间增长的 .ccache 不在这份里（下一轮补，ccache 可再生）。
-      # ⚠ key 带 -early 后缀，不能与正式 key 相同：actions/cache 一个 key 只能存
-      #   一次，同 key 会让这份「只有工具链」的早期缓存把完整版挡在门外
-      #   （实测早期 220 MB / 完整 554 MB，差的正是 hostpkg，导致每轮重编 go/rust）。
-      #   轮换侧由 cache-roll.jq 剥掉 -early 分组，正式 key 在则 -early 退场。
-      # =========================================================
+      # 工具链一编完就存一次，别等编译结束（超时被 cancel 就白编）。
+      # ⚠ key 必须带 -early：一个 key 只能存一次，同 key 会把完整版挡在门外。
       - name: Save build cache (right after toolchain)
         id: save-early
-        # ⚠ 这里【不能】用 success()：
-        #   紧随其后的「Build host go/rust from source」最长 200 分钟，
-        #   一旦它失败或超时，success() 就变 false —— 连已经编好的
-        #   tools/toolchain 也一起丢了，等于白跑 1.5 小时。
-        #   用 !cancelled()：只要没被手动取消就存，编译失败也保住成果。
+        # ⚠ 不能用 success()：后面 go/rust 最长 200 分钟，一失败就丢工具链 —— 用 !cancelled()
         if: >-
           (!cancelled())
           && steps.toolchain.outcome == 'success'
@@ -1191,17 +991,12 @@ jobs:
         uses: actions/cache/save@v5
         continue-on-error: true
         with:
-          # -early 后缀：见上面的说明，不能和正式 key 相同，
-          # 否则这份「只有工具链」的缓存会把后面完整的正式缓存挡掉。
           key: ${{ steps.cache-key.outputs.key }}-early
           path: |
             ${{ env.CACHE_ROOT }}/.ccache
             ${{ env.CACHE_ROOT }}/staging_dir/host*
             ${{ env.CACHE_ROOT }}/staging_dir/tool*
 
-      # =========================================================
-      # 10.1 缓存决策写进 Summary —— 命中与否一眼可见
-      # =========================================================
       - name: Cache decision
         run: |
           HIT='${{ steps.cache-restore.outputs.cache-hit }}'
@@ -1237,27 +1032,14 @@ jobs:
           echo "命中     : ${HIT:-false} / matched=${MATCHED:-none} / release=${REL:-false}"
           echo "编译工具链: ${{ steps.toolchain.outcome }}"
 
-      # =========================================================
-      # 12.5 ccache 补装（仅 USE_CCACHE=true）
-      #   ccache 由 tools/ccache 装到 staging_dir/host/bin，只有 CONFIG_CCACHE
-      #   生效时才编（tools/Makefile: tools-y += ccache xxhash）。
-      # ⚠ 缓存命中时 make tools/install 被跳过；若那份缓存是未开 ccache 时建的，
-      #   rules.mk 的 TARGET_CC := ccache $(TARGET_CC) 会找不到二进制 → Error 127。
-      #   故这里单独补装，失败就自动关掉 ccache 继续编译。
-      # =========================================================
+      # ccache 补装（USE_CCACHE=true）。缓存命中时 tools/install 被跳过，
+      # 若那份缓存没开过 ccache，rules.mk 的 TARGET_CC 会 Error 127。
       - name: Setup ccache (opt-in)
         if: env.USE_CCACHE == 'true'
         run: |
           cd "$BUILD_ROOT/openwrt"
 
-          # 1) 确保 .config 里有 CONFIG_CCACHE=y（rules.mk 据此启用 ccache）
-          #
-          # ⚠ 这里【不】跑 make defconfig：
-          #   1) rules.mk 是直接解析 .config 里的 CONFIG_CCACHE，不需要 kconfig 展开；
-          #   2) 步骤 9 的注释写明「唯一一次 defconfig」，这里再跑一次会把
-          #      diy-part2.sh 之后写进 .config 的选择重新展开一遍，正是那条
-          #      注释要避免的事；
-          #   3) 原来那行还带 `|| true`，连失败都看不见（同 P0：管道/短路吞错）。
+          # 不跑 defconfig：rules.mk 直接读 .config 的 CONFIG_CCACHE
           sed -i '/^CONFIG_CCACHE=/d; /^# CONFIG_CCACHE is not set/d' .config
           echo 'CONFIG_CCACHE=y' >> .config
 
@@ -1280,32 +1062,20 @@ jobs:
             sed -i 's/^CONFIG_CCACHE=y/# CONFIG_CCACHE is not set/' .config
           fi
 
-      # =========================================================
-      # 16. SSH 调试（仅受控场景开启）
-      # =========================================================
       - name: SSH connection to Actions
         uses: mxschmitt/action-tmate@v3
-        # 原条件 contains(github.event.action, 'ssh') 对 workflow_dispatch 永假
-        # （event.action 恒为 "workflow_dispatch"），叠加 ref==refs/heads/main
-        # （本 workflow 在 FTTR 分支运行）后，ssh=true 从来不会触发。
-        # 保留 owner 校验：调试入口只对仓库所有者开放。
+        # 原条件 contains(event.action,'ssh') 对 workflow_dispatch 永假；保留 owner 校验
         if: >-
           github.event.inputs.ssh == 'true'
           && github.actor == github.repository_owner
 
-      # =========================================================
-      # 17. 下载软件包（defconfig 已在步骤 9 执行，此处不再重复）
-      # =========================================================
       - name: Download packages
         id: package
         if: env.BUILD_SCOPE != 'toolchain-only'
         run: |
           cd "$BUILD_ROOT/openwrt"
 
-          # ⚠ 三次都失败就必须失败退出，不能「默默继续」。
-          #   之前这里是 if make ...; then break; fi，三次失败也照样往下走，
-          #   于是「下载不全」一直拖到编译阶段才爆，报的却是完全不相干的错
-          #   （例如 cargo --frozen 说缺 crate，根因其实是这里没下全）。
+          # 三次都失败必须退出：以前默默继续，下载不全拖到编译期报不相干的错
           OK=0
           for i in 1 2 3; do
             echo "===== 第 $i 次尝试: make download ====="
@@ -1327,14 +1097,8 @@ jobs:
           fi
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
 
-      # =========================================================
-      # 17.5 存 dl 缓存
-      # ★ 必须放在编译之前：350 分钟一到 job 被 cancel，后面所有步骤（含
-      #   always()）都来不及跑，几个 G 的 dl 白下。代价是编译期才下的零星文件
-      #   这轮进不了缓存，下一轮 make download 会补。
-      # ⚠ 只在 package 步真跑成功时存：否则一份只含工具链源码的残缺 dl 会占掉
-      #   本周的 key，同周后续 firmware 命中的就是这份残缺内容。
-      # =========================================================
+      # 存 dl 缓存必须放在编译之前：350 分钟到点被 cancel，后面 always() 也来不及。
+      # ⚠ 只在 make download 真成功时存，否则残缺 dl 会占掉本周的 key。
       - name: Save dl cache
         if: >-
           success()
@@ -1347,11 +1111,7 @@ jobs:
           key: ponwrt-dl-${{ env.SOURCE_SLUG }}-${{ github.event.inputs.branch || 'master' }}-${{ steps.resolve.outputs.week }}
           path: /workdir/openwrt/dl
 
-      # =========================================================
-      # 18. 编译固件
-      #     并发数按可用内存动态计算：每个 cc1 约 1.5-2G RSS，
-      #     4 核 16G runner 上 -j8 易触发 OOM-killer 杀 cc1。
-      # =========================================================
+      # 固件编译。并发按可用内存算（每个 cc1 约 1.5~2G），-j8 在 16G runner 上易 OOM
       - name: Compile the firmware
         id: compile
         if: env.BUILD_SCOPE != 'toolchain-only'
@@ -1363,20 +1123,10 @@ jobs:
           echo "开始编译 (${JOBS} 线程) / 机型: ${PROFILE}"
           df -hT /
 
-          # =========================================================
-          # 失败必须留证据
-          #   原来的是 `make -jN || make -j1 || make -j1 V=s || exit 1`：
-          #   三条命令的输出全靠 Actions 日志页整段翻，而真正的原因往往只有一行：
-          #       ERROR: target/linux failed to build.      ← include/subdir.mk:68
-          #   这行是【包装】，不是原因；真错误在几万行 V=s 输出里滚过去了。
-          #   这里做三件事：
-          #     ① 全程 tee 到 build-logs/build.log（context 7 也不会截断本地文件）；
-          #     ② 失败后把 ERROR/Error/*** 行聚到日志末尾的折叠组里，
-          #        外加最后一次失败的上下文 40 行；
-          #     ③ 若是 target/linux 那层吞的错，单独重跑 `make -C target/linux install V=s`
-          #        —— 只跑镜像组装，几十秒，不看工具链脸色。
-          #   文件再由下一步 upload-artifact 传上来（失败也能下载）。
-          # =========================================================
+          # 失败留证据：subdir.mk 会把子目录失败折叠成一行
+          #   ERROR: target/linux failed to build.  ← 这是包装，不是原因。
+          # 全程 tee 到 build-logs/build.log；失败后聚合 ERROR 行，必要时单独重跑
+          # target/linux/install（几十秒）把这层的真错误逼出来。
           LOGDIR="$GITHUB_WORKSPACE/build-logs"
           mkdir -p "$LOGDIR"
           : > "$LOGDIR/build.log"
@@ -1411,16 +1161,10 @@ jobs:
             tail -40 "$LOGDIR/build.log" || true
             echo "::endgroup::"
 
-            # target/linux 的错会被 subdir.mk 折叠成一行，单独重跑这一段
             if grep -qE "target/linux.*failed to build" "$LOGDIR/build.log"; then
               echo "::group::单独重跑 target/linux install（这一层才是真错误）"
-              # ⚠ 不能写 `make -C target/linux install`：那是 subdir.mk 的内部调用，
-              #   依赖父 make 通过环境变量往下传 TOPDIR/INCLUDE_DIR。
-              #   单独这么调，target/linux/Makefile:7 的
-              #   `include $(INCLUDE_DIR)/default-packages.mk` 会变成
-              #   `/default-packages.mk: No such file or directory` —— 假错误，
-              #   和真正的失败原因毫无关系，白跑一次还误导人。
-              #   正确姿势是从顶层指定子目录目标，TOPDIR 由顶层 Makefile 导出。
+              # ⚠ 不能写 `make -C target/linux install`：TOPDIR/INCLUDE_DIR 由父 make
+              # 传下去，单独调用会把 include 拼成 /default-packages.mk（假错误）。
               make -j1 V=s target/linux/install > "$LOGDIR/install.log" 2>&1 || true
               grep -nE -B2 -A20 "ERROR|error:|\*\*\* |unable to select|no such package" \
                 "$LOGDIR/install.log" | head -150 || true
@@ -1432,10 +1176,7 @@ jobs:
               fi
               echo "::endgroup::"
 
-              # DEVICE_PACKAGES 逐个核对有没有真的编出 .apk
-              #   config 里 =y 只代表「要编」，不代表「编出来了」；
-              #   而 include/image.mk 的 apk 路径不像 opkg 那条会过滤缺失包，
-              #   缺一个就在这一步硬失败。这里直接把缺的包点名。
+              # =y 只代表要编，不代表编出来了；apk 路径不过滤缺包，缺一个就硬失败
               echo "::group::DEVICE_PACKAGES ↔ .apk 对账"
               DEVPKGS=$(awk -v p="DEVICE_${PROFILE}" '
                 $0 == "Target-Profile: " p { f = 1; next }
@@ -1466,12 +1207,7 @@ jobs:
               echo "::endgroup::"
             fi
 
-            # =========================================================
-            # 写进 run 页面的 Summary（首屏可见），不依赖 artifact
-            #   artifact 只是 run 的附件：run 记录被删（清理旧记录 / 保留期到期），
-            #   artifact 一起消失，历史失败就彻底查不了了。Summary 跟着 run 页面走，
-            #   而且不用下载解压就能看到真实错误行。
-            # =========================================================
+            # 写进 run Summary：artifact 是 run 的附件，run 被清理就一起没了，Summary 不会
             {
               echo "## ❌ 编译失败：\`${DEVICE_NAME}\`"
               echo ""
@@ -1508,16 +1244,10 @@ jobs:
           echo "status=success" >> "$GITHUB_OUTPUT"
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> "$GITHUB_ENV"
 
-          # 全量再冻一次：target 阶段会顺带编出一批 host 包（python3 等），
-          # 这些戳只有编译结束才存在。source 模式下它们同样会被自举。
+          # 再冻一次：target 阶段顺带编出的 host 包（python3 等）只有这时才有戳
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
-      # =========================================================
-      # 18.1 失败时把编译日志带回来
-      #   Actions 网页日志单步骤有截断、滚屏极难，也没法 grep。
-      #   落成 artifact 后直接下载 `less -R` / `grep -n ERROR`，排错快一个量级。
-      #   只在 compile 步真的失败时上传（skipped 不传，避免空包告警）。
-      # =========================================================
+      # 失败时带回日志：网页日志会截断，落成 artifact 才能 grep
       - name: Upload build logs on failure
         if: steps.compile.outcome == 'failure'
         uses: actions/upload-artifact@v5
@@ -1528,21 +1258,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # =========================================================
-      # 18.5 存新一代缓存
-      #   三条判断缺一不可：
-      #     success()                    编译过的东西才可信
-      #     cache-hit != true            只有「actions/cache 里就有同 key 条目」才说明
-      #                                  内容确实不用重存；其余情况一律存
-      #     compile/toolchain 任一成功  toolchain-only 的预热也要存
-      # ⚠ 不判断 Release 里有没有同 key：Release 是【可覆盖】的（--clobber），
-      #   而 actions/cache 一个 key 只能存一次。「Release 已有该 key」并不能推出
-      #   「内容一致」——本轮可能刚补编完 hostpkg、刚冻出一批 build_dir 戳，
-      #   这些只有存回去下一轮才用得上。曾经因为跳过，导致 go/rust 白自举一轮。
-      # ⚠ 不判断 save-early：它存的是 <key>-early，与本处正式 key 不同、可共存，
-      #   而正式这份才是完整的（含编译阶段才带出来的 hostpkg）。
-      #   同 key 已存在会报 already exists，continue-on-error 兜住，属正常。
-      # =========================================================
+      # 存新一代缓存。success() + cache-hit != true + 编译成功，三条都要。
+      # 不看 Release 是否已有同 key：Release 可覆盖，缓存不能，内容可能刚补全。
       - name: Save build cache
         if: >-
           success()
@@ -1557,13 +1274,7 @@ jobs:
             ${{ env.CACHE_ROOT }}/staging_dir/host*
             ${{ env.CACHE_ROOT }}/staging_dir/tool*
 
-      # =========================================================
-      # 18.6 存一份到 Release 备份
-      #   与上一步同一份内容，只换介质：actions/cache 快但 7 天回收，
-      #   Release 慢（~1 GB）但永久。
-      # ⚠ 先上传新的再删旧代 —— 反过来一旦上传失败，备份通道就归零。
-      # ⚠ 单文件超 2 GiB 会被拒，先量体积再决定传不传。
-      # =========================================================
+      # 同一份内容换个介质存到 Release（缓存 7 天回收，Release 永久）。先传后删
       - name: Save cache to Release backup
         if: >-
           env.RELEASE_BACKUP == 'true'
@@ -1614,29 +1325,18 @@ jobs:
 
           rm -f "$TARBALL"
 
-      # =========================================================
-      # 19. 空间检查
-      # =========================================================
       - name: Check space usage
         if: (!cancelled())
         run: df -hT
 
-      # =========================================================
-      # 20. 上传 bin 目录
-      # =========================================================
       - name: Upload bin directory
         uses: actions/upload-artifact@v5
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin_${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          # 必须用绝对路径：openwrt/bin 是 $GITHUB_WORKSPACE 下的符号链接
-          # （Clone source code 步骤 ln -sf 建的），upload-artifact 遍历
-          # 符号链接目录不可靠，可能传一个空包。
+          # 必须绝对路径：bin 是指向 /workdir 的符号链接，upload-artifact 遍历符号链接不可靠
           path: ${{ env.BUILD_ROOT }}/openwrt/bin
 
-      # =========================================================
-      # 21. 整理并上传固件
-      # =========================================================
       - name: Organize files
         id: organize
         if: env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.status == 'success'
@@ -1646,15 +1346,8 @@ jobs:
           echo "FIRMWARE=$PWD" >> "$GITHUB_ENV"
           echo "status=success" >> "$GITHUB_OUTPUT"
 
-      # =========================================================
-      # 21.5 固件文件名追加构建时间（精确到秒，Asia/Shanghai）
-      #   ...-squashfs-sysupgrade.itb
-      #     → ...-squashfs-sysupgrade-2026-11-13_133226(Shanghai).itb
-      #   格式固定为 <日期>_<时分秒>(Shanghai)：Artifact 与 Release 同名同格式。
-      #   不用 "2026-11-13 13:32:26 (Shanghai)" 是因为 actions/upload-artifact
-      #   禁止文件名含 `: " < > | * ? CR LF`，冒号会让整个上传失败。
-      #   注意：改名后 sha256sums 里的旧名字会失效，本步骤一并重算。
-      # =========================================================
+      # 固件文件名追加构建时间：<名>-2026-11-13_133226(Shanghai).itb。
+      # 冒号会让 upload-artifact 整包失败；改名后 sha256sums 一并重算。
       - name: Stamp firmware filenames with build time
         id: stamp
         if: steps.organize.outputs.status == 'success' && env.FW_TS_NAME == 'true'
@@ -1684,9 +1377,7 @@ jobs:
           already=0
           for f in *; do
             [ -f "$f" ] || continue
-            # 这几种是「描述/校验」文件，名字必须保持原样：
-            #   sha256sums 全量校验、profiles.json 给 owut/ASU 按原名找镜像、
-            #   *.buildinfo 记录 feeds/config 版本
+            # 描述/校验类文件保持原名：sha256sums、profiles.json（owut/ASU 按原名找）、buildinfo
             case "$f" in
               sha256sums*|profiles.json|*.buildinfo|*.ipk|*.apk) continue ;;
               # 幂等护栏：万一这一步被执行两次，别叠加成
@@ -1719,9 +1410,6 @@ jobs:
           name: OpenWrt_firmware_${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
 
-      # =========================================================
-      # 22. 生成 Release 说明
-      # =========================================================
       - name: Generate release tag
         id: tag
         if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success'
@@ -1732,15 +1420,12 @@ jobs:
             exit 0
           fi
 
-          # 固定 tag：机型 + 分支，不含时间戳、不含作者
-          # 同一机型/分支再次编译时，softprops/action-gh-release 会更新
-          # 这个已存在的 Release（同名固件自动覆盖），不会新建版本。
+          # 固定 tag = 机型 + 分支；重编时更新同一个 Release，不新建版本
           RELEASE_TAG=$(echo "${DEVICE_NAME}-${REPO_BRANCH}" | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
           touch release.txt
-          # 说明里的时间显示成人类可读的 "2026-11-13 13:41:52 (Shanghai)"，
-          # 由文件名里的 2026-11-13_134152(Shanghai) 反推，两处永远同一秒。
+          # 说明里的时间由文件名反推，两处永远同一秒
           if [ -n "${FW_TS:-}" ]; then
             BUILD_TIME=$(printf '%s' "$FW_TS" | sed -E \
               's/^([0-9]{4}-[0-9]{2}-[0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\(Shanghai\)$/\1 \2:\3:\4 (Shanghai)/')
@@ -1801,10 +1486,6 @@ jobs:
             ${{ env.FIRMWARE }}/*.manifest
             ${{ env.FIRMWARE }}/*.json
 
-      # =========================================================
-      # 23. 清理旧记录
-      #     仅清理「已上传成功」的运行；失败的运行保留日志便于排错。
-      # =========================================================
       - name: Delete workflow runs
         if: steps.compile.outputs.status == 'success'
         uses: Mattraks/delete-workflow-runs@v2
@@ -1815,9 +1496,7 @@ jobs:
 
       - name: Remove old releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
-        # 必须 success()：原条件只有 !cancelled()，编译失败时这一步照样跑，
-        # 而 delete_tags: true 会把旧 tag 删掉 → 已经发出去的下载链接全部 404，
-        # 新固件又没传上去，等于把发布页清空了。
+        # 必须 success()：失败时删 tag 会让已发布的下载链接全部 404
         if: env.UPLOAD_RELEASE == 'true' && success()
         with:
           keep_latest: 10
@@ -1826,12 +1505,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # =========================================================
-  # 缓存轮换 —— 每次构建换一代 key，旧代没人用却占着 10GB 配额
-  #   单独成 job 而不是并进 build：它需要 concurrency（避免两个构建互删
-  #   对方刚存的那代），且失败不该影响构建结论。
-  #   脚本内部先确认「当前 key 已在缓存里」再删，避免删掉唯一一份。
-  # =========================================================
+  # 缓存轮换：单独成 job 是为了能上 concurrency，且失败不影响构建结论。
+  # 脚本先确认当前 key 已在缓存里再删，避免删掉唯一一份。
   cache-rollover:
     name: Roll build cache
     needs: build
