@@ -1405,16 +1405,64 @@ jobs:
             cp -f "$LOGDIR/build.log" "$LOGDIR/failure.log" 2>/dev/null || true
 
             echo "::group::失败定位 —— 真实错误行"
-            grep -nE "(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)" \
+            grep -nE "(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)|unable to select packages|no such package|Image too big|not found" \
               "$LOGDIR/build.log" | tail -40 || echo "(没匹配到 ERROR/Error 行，见下面上下文)"
             echo "---- 最后 40 行 ----"
             tail -40 "$LOGDIR/build.log" || true
             echo "::endgroup::"
 
             # target/linux 的错会被 subdir.mk 折叠成一行，单独重跑这一段
-            if grep -qE "target/linux.*failed to build|ERROR: target/linux" "$LOGDIR/build.log"; then
+            if grep -qE "target/linux.*failed to build" "$LOGDIR/build.log"; then
               echo "::group::单独重跑 target/linux install（这一层才是真错误）"
-              make -C target/linux install V=s 2>&1 | tee -a "$LOGDIR/failure.log" | tail -80 || true
+              # ⚠ 不能写 `make -C target/linux install`：那是 subdir.mk 的内部调用，
+              #   依赖父 make 通过环境变量往下传 TOPDIR/INCLUDE_DIR。
+              #   单独这么调，target/linux/Makefile:7 的
+              #   `include $(INCLUDE_DIR)/default-packages.mk` 会变成
+              #   `/default-packages.mk: No such file or directory` —— 假错误，
+              #   和真正的失败原因毫无关系，白跑一次还误导人。
+              #   正确姿势是从顶层指定子目录目标，TOPDIR 由顶层 Makefile 导出。
+              make -j1 V=s target/linux/install > "$LOGDIR/install.log" 2>&1 || true
+              grep -nE -B2 -A20 "ERROR|error:|\*\*\* |unable to select|no such package" \
+                "$LOGDIR/install.log" | head -150 || true
+              echo "---- install.log 末尾 60 行 ----"
+              tail -60 "$LOGDIR/install.log" || true
+              if grep -q "default-packages.mk" "$LOGDIR/install.log"; then
+                echo "::error::连顶层发起都缺 include/default-packages.mk —— 源码树不完整，"
+                echo "不是 TOPDIR 问题，检查 clone 是否 --depth=1 拉全、include/ 是否被覆盖"
+              fi
+              echo "::endgroup::"
+
+              # DEVICE_PACKAGES 逐个核对有没有真的编出 .apk
+              #   config 里 =y 只代表「要编」，不代表「编出来了」；
+              #   而 include/image.mk 的 apk 路径不像 opkg 那条会过滤缺失包，
+              #   缺一个就在这一步硬失败。这里直接把缺的包点名。
+              echo "::group::DEVICE_PACKAGES ↔ .apk 对账"
+              DEVPKGS=$(awk -v p="DEVICE_${PROFILE}" '
+                $0 == "Target-Profile: " p { f = 1; next }
+                f && /^Target-Profile-Packages:/ { sub(/^Target-Profile-Packages:[ \t]*/, ""); print; exit }
+              ' tmp/.targetinfo 2>/dev/null)
+              if [ -z "$DEVPKGS" ]; then
+                echo "tmp/.targetinfo 里没有 DEVICE_${PROFILE} 的包列表（元数据没生成？）"
+              else
+                MISSING=""; N=0
+                for p in $DEVPKGS; do
+                  case "$p" in -*) continue ;; esac
+                  p=${p%%:*}
+                  N=$(( N + 1 ))
+                  if ! ls bin/packages/*/*/"$p"-*.apk >/dev/null 2>&1 && \
+                     ! ls bin/targets/*/*/packages/"$p"-*.apk >/dev/null 2>&1; then
+                    MISSING="$MISSING $p"
+                  fi
+                done
+                if [ -n "$MISSING" ]; then
+                  echo "::error::DEVICE_PACKAGES 共 ${N} 个，以下包没有生成 .apk:$MISSING"
+                  echo "→ 这些包要么内核 KCONFIG 没开（KernelPackage 生成空包/不生成），"
+                  echo "  要么被 feeds 移除；先把 .config 里 CONFIG_PACKAGE_<pkg> 和"
+                  echo "  CONFIG_<KCONFIG> 对上，再重编 target/linux。"
+                else
+                  echo "✅ ${N} 个 DEVICE_PACKAGES 全部有 .apk —— 失败不在这条链上"
+                fi
+              fi
               echo "::endgroup::"
             fi
 
