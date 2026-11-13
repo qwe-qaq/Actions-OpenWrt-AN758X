@@ -34,16 +34,14 @@ env:
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
   # ---- 固件文件名时间戳 ----
-  #   true  = 上传到 Release / Artifact 的文件名里插入构建时间（精确到秒）
-  #           ponwrt-airoha-an7581-fiberhome_an4475-g2-squashfs-sysupgrade-2026-11-13 07:09:12 (Shanghai).itb
+  #   true  = Artifact / Release 的文件名里插入构建时间（精确到秒，Asia/Shanghai）
+  #           ...-squashfs-sysupgrade-2026-11-13_133226(Shanghai).itb
   #   false = 保持 OpenWrt 原始文件名
+  #   为什么是下划线+无冒号：actions/upload-artifact 禁止文件名含 `: " < > | * ? CR LF`，
+  #   带冒号会被整包拦下（NTFS/Windows 下载兼容性），所以统一用这个形态。
   #   注意：改名后「同名覆盖」不再成立，历史资产会一直留在同一 Release 里，
   #         本 workflow 不做任何删除，需要清理请手动删（单 Release 上限 1000 个资产）。
   FW_TS_NAME: 'true'
-  #   space = "2026-11-13 07:09:12 (Shanghai)"（好看，但含空格；GitHub 会把资产名里的
-  #           空格转成 "."，URL 里也是 %20，: 在 Windows 上是非法字符，命令行要用引号）
-  #   safe  = "2026-11-13_070912(Shanghai)"（推荐：无空格无冒号，任何系统/脚本都不出问题）
-  FW_TS_STYLE: 'space'
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
@@ -1420,8 +1418,11 @@ jobs:
 
       # =========================================================
       # 21.5 固件文件名追加构建时间（精确到秒，Asia/Shanghai）
-      #   ...-squashfs-sysupgrade.itb  →  ...-squashfs-sysupgrade-2026-11-13 07:09:12 (Shanghai).itb
-      #   必须在 Artifact / Release 上传之前改名，两边拿到的文件名才一致。
+      #   ...-squashfs-sysupgrade.itb
+      #     → ...-squashfs-sysupgrade-2026-11-13_133226(Shanghai).itb
+      #   格式固定为 <日期>_<时分秒>(Shanghai)：Artifact 与 Release 同名同格式。
+      #   不用 "2026-11-13 13:32:26 (Shanghai)" 是因为 actions/upload-artifact
+      #   禁止文件名含 `: " < > | * ? CR LF`，冒号会让整个上传失败。
       #   注意：改名后 sha256sums 里的旧名字会失效，本步骤一并重算。
       # =========================================================
       - name: Stamp firmware filenames with build time
@@ -1430,14 +1431,12 @@ jobs:
         run: |
           cd "$FIRMWARE"
 
-          # 时间戳只取一次：文件名、Release 说明、旧资产清理都用同一个值，
-          # 避免跨秒导致「清理不掉自己刚传的那份」。
-          TS_SPACE=$(date '+%Y-%m-%d %H:%M:%S')
-          TS_SAFE=$(date '+%Y-%m-%d_%H%M%S')
-          case "${FW_TS_STYLE:-space}" in
-            safe) TS="${TS_SAFE}(Shanghai)" ;;
-            *)    TS="${TS_SPACE} (Shanghai)" ;;
-          esac
+          # 2026-11-13 13:32:26 → 2026-11-13_133226(Shanghai)
+          NOW=$(date '+%Y-%m-%d %H:%M:%S')
+          DATE_PART=${NOW%% *}
+          TIME_PART=${NOW#* }
+          TS="${DATE_PART}_${TIME_PART//:/}(Shanghai)"
+
           echo "FW_TS=${TS}" >> "$GITHUB_ENV"
           echo "本次文件名时间戳: ${TS}"
 
@@ -1452,6 +1451,7 @@ jobs:
           }
 
           renamed=0
+          already=0
           for f in *; do
             [ -f "$f" ] || continue
             # 这几种是「描述/校验」文件，名字必须保持原样：
@@ -1459,6 +1459,9 @@ jobs:
             #   *.buildinfo 记录 feeds/config 版本
             case "$f" in
               sha256sums*|profiles.json|*.buildinfo|*.ipk|*.apk) continue ;;
+              # 幂等护栏：万一这一步被执行两次，别叠加成
+              # -2026-11-13_133226(Shanghai)-2026-11-13_133300(Shanghai)
+              *-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]*) already=$((already + 1)); continue ;;
             esac
             ext=$(get_ext "$f")
             base=${f%"$ext"}
@@ -1472,9 +1475,9 @@ jobs:
           sha256sum * > sha256sums 2>/dev/null || true
 
           echo "已改名文件数: ${renamed}" >> "$GITHUB_STEP_SUMMARY"
-          echo "文件时间戳: ${TS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "文件名时间戳: ${TS}" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$renamed" -eq 0 ]; then
+          if [ "$renamed" -eq 0 ] && [ "$already" -eq 0 ]; then
             echo "::warning::固件目录里没有可改名的产物，Release 将使用原始文件名"
           fi
           echo "status=success" >> "$GITHUB_OUTPUT"
@@ -1506,8 +1509,14 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
           touch release.txt
-          # 有文件名时间戳就用它当「编译时间」，两处不会跨秒对不上
-          BUILD_TIME="${FW_TS:-$(date '+%Y-%m-%d %H:%M:%S') (Shanghai)}"
+          # 说明里的时间显示成人类可读的 "2026-11-13 13:41:52 (Shanghai)"，
+          # 由文件名里的 2026-11-13_134152(Shanghai) 反推，两处永远同一秒。
+          if [ -n "${FW_TS:-}" ]; then
+            BUILD_TIME=$(printf '%s' "$FW_TS" | sed -E \
+              's/^([0-9]{4}-[0-9]{2}-[0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2})\(Shanghai\)$/\1 \2:\3:\4 (Shanghai)/')
+          else
+            BUILD_TIME="$(date '+%Y-%m-%d %H:%M:%S') (Shanghai)"
+          fi
           {
             echo "## PonWrt 自动编译固件"
             echo ""
@@ -1532,9 +1541,6 @@ jobs:
             if [ -n "${FW_TS:-}" ]; then
               echo "> 本 Release 为滚动发布页；追加了文件名时间戳，历史产物**不删除**，按时间戳区分新旧。"
               echo "> 固件文件名尾部的 \`${FW_TS}\` 是本次编译时间，取时间戳最大的那份刷机即可。"
-              case "${FW_TS}" in
-                *" "*) echo "> 文件名含空格，命令行下载/校验请用引号包裹（GitHub 会把空格显示成 \`.\`，以 \`%20\` 编码下载不影响使用）。" ;;
-              esac
             else
               echo "> 本 Release 为滚动发布页，仅保留最新一次编译产物。"
             fi
