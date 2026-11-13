@@ -191,6 +191,20 @@ permissions:
   contents: write
   actions: write
 
+# =========================================================
+# 并发闸门：同一「源码 + 机型 + 范围」同时只允许跑一个
+#   不加的话，连点两次会同时发生：
+#     ① 抢同一个 Release tag（${DEVICE_NAME}-${REPO_BRANCH} 是固定值）
+#        → 两条通道互相 --clobber，后跑的覆盖先跑的；
+#     ② 抢同一个 actions/cache key（一个 key 只能存一次，第二个报 already exists）；
+#     ③ 第 22 步删旧资产时，把对方刚上传的那份也当「旧代」删掉；
+#     ④ profiles.json / sha256sum 与实际文件对不上（下载回来校验失败）。
+#   cancel-in-progress: false —— 构建是几小时的活，后到的排队而不是掐死前一个。
+# =========================================================
+concurrency:
+  group: build-ponwrt-${{ github.event.inputs.source || 'default' }}-${{ github.event.inputs.profile || 'all' }}-${{ github.event.inputs.scope || 'firmware' }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -890,6 +904,89 @@ jobs:
           echo "✅ 状态插件校验通过"
 
           # =========================================================
+          # 设备包闭环校验：DEVICE_PACKAGES ──> CONFIG_PACKAGE_*=y
+          #
+          #   为什么必须查这一条（an4475-g2 那次炸的就是它）：
+          #   image/an7581.mk 里的 DEVICE_PACKAGES 并不是直接装包，而是经
+          #   scripts/target-metadata.pl 变成一句 select：
+          #       select DEFAULT_kmod-phy-motorcomm
+          #   再由 scripts/package-metadata.pl 生成的规则兜住：
+          #       config PACKAGE_kmod-phy-motorcomm
+          #         default y if DEFAULT_kmod-phy-motorcomm
+          #   也就是说「元数据 → kconfig 符号」这一跳一旦是旧的
+          #   （tmp/.targetinfo 或 tmp/.config-package.in 没重建、
+          #    .packageinfo 里没这个包），select 就指空，包静默消失，
+          #   全程零报错 —— 直到 target/linux install 阶段：
+          #   include/image.mk 的 apk 路径是 `apk add $(mkfs_packages_add)`，
+          #   【没有】opkg 那条 opkg_package_files 过滤逻辑，缺一个包就直接
+          #   `ERROR: target/linux failed to build.`（真错误还被 subdir.mk 折叠）。
+          #   放在这里，几小时的 world 变成几十秒的结论，且直接点名是哪个包。
+          # =========================================================
+          if [ "$PROFILE" != "all" ]; then
+            TI=tmp/.targetinfo
+            if [ ! -f "$TI" ]; then
+              echo "::error::缺 $TI —— defconfig 没跑成功，后续校验不可信"
+              exit 1
+            fi
+            DEVPKGS=$(awk -v p="DEVICE_${PROFILE}" '
+              $0 == "Target-Profile: " p { f = 1; next }
+              f && /^Target-Profile:/ { f = 0 }
+              f && /^Target-Profile-Packages:/ { sub(/^Target-Profile-Packages:[ \t]*/, ""); print; exit }
+            ' "$TI")
+
+            if [ -z "$DEVPKGS" ]; then
+              echo "::warning::$TI 里找不到 DEVICE_${PROFILE} 的 Target-Profile-Packages"
+              echo "  --- 诊断 ---"
+              echo "  1) 该机型是否还在 image/*.mk 里: $(grep -rc "Device/${PROFILE}" target/linux/airoha/image/*.mk 2>/dev/null | grep -v ':0' || echo 0)"
+              echo "  2) targetinfo 里的 profile 列表:"
+              grep '^Target-Profile: ' "$TI" | sed 's/^/     /' | head -20
+            else
+              MISS_DEV=""
+              MOD_ONLY=""
+              CHK=0
+              for p in $DEVPKGS; do
+                case "$p" in -*) continue ;; esac      # DEVICE_PACKAGES 里的 -pkg 是移除项
+                p=${p%%:*}                              # 去掉 pkg:variant 的变体后缀
+                CHK=$(( CHK + 1 ))
+                # =y 装进镜像；=m 只编成 .apk（镜像组装时 apk add 仍能取到）——
+                # 两者都算「这个包会被编出来」。真正致命的是符号整个不存在，
+                # 即 config 里连 "# CONFIG_PACKAGE_x is not set" 都没有。
+                if grep -qx "CONFIG_PACKAGE_${p}=y" .config; then
+                  continue
+                elif grep -qx "CONFIG_PACKAGE_${p}=m" .config; then
+                  MOD_ONLY="$MOD_ONLY $p"
+                else
+                  MISS_DEV="$MISS_DEV $p"
+                fi
+              done
+
+              if [ -n "$MOD_ONLY" ]; then
+                echo "::warning::以下包是 =m（只编包不默认安装，靠 DEVICE_PACKAGES 显式 apk add）:$MOD_ONLY"
+              fi
+
+              if [ -n "$MISS_DEV" ]; then
+                echo "::error::机型 ${PROFILE} 的 DEVICE_PACKAGES 有包没被选中:$MISS_DEV"
+                echo "::error::apk 组装镜像时不会跳过缺失包，world 会在 target/linux install 阶段失败"
+                echo "--- 逐个诊断 ---"
+                for p in $MISS_DEV; do
+                  echo "▸ ${p}"
+                  echo "    元数据记录: $(grep -c "^Package: ${p}\$" tmp/.packageinfo 2>/dev/null || echo 0) 条"
+                  echo "    配置符号:   $(grep -c "^config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo 0) 条"
+                  echo "    在 .config: $(grep -E "^(# )?CONFIG_PACKAGE_${p}[= ]" .config 2>/dev/null | head -1 | sed 's/^ *//' || echo 无)"
+                  echo "    image 引用: $(grep -rn "${p}" target/linux/airoha/image/*.mk 2>/dev/null | head -2 | sed 's/^ *//' || echo 无)"
+                done
+                echo "--- 两种成因 ---"
+                echo "  A) 包确实不存在/被 feeds 剔除 → tmp/.packageinfo 里是 0 条"
+                echo "  B) 包存在但符号没被 default y 带起来 → 元数据陈旧（tmp/ 残留）"
+                echo "临时解: 在 configs/${PROFILE}.config 里补 CONFIG_PACKAGE_<包>=y"
+                echo "根治:   rm -rf tmp/ 后重跑 defconfig（.packageinfo / .config-package.in 都会重建）"
+                exit 1
+              fi
+              echo "✅ 设备包校验通过（${CHK} 个 DEVICE_PACKAGES 全部能被编出来）"
+            fi
+          fi
+
+          # =========================================================
           # 代理插件校验（只警告，不阻断）
           #
           #   这是「源码拉下来了、索引里有、固件里却没这个菜单」的那个坑：
@@ -1279,14 +1376,62 @@ jobs:
           echo "开始编译 (${JOBS} 线程) / 机型: ${PROFILE}"
           df -hT /
 
-          if make -j"${JOBS}"; then
-            echo "多线程编译成功"
-          elif make -j1; then
-            echo "单线程编译成功"
-          elif make -j1 V=s; then
-            echo "单线程详细日志编译成功"
-          else
-            echo "编译失败"
+          # =========================================================
+          # 失败必须留证据
+          #   原来的是 `make -jN || make -j1 || make -j1 V=s || exit 1`：
+          #   三条命令的输出全靠 Actions 日志页整段翻，而真正的原因往往只有一行：
+          #       ERROR: target/linux failed to build.      ← include/subdir.mk:68
+          #   这行是【包装】，不是原因；真错误在几万行 V=s 输出里滚过去了。
+          #   这里做三件事：
+          #     ① 全程 tee 到 build-logs/build.log（context 7 也不会截断本地文件）；
+          #     ② 失败后把 ERROR/Error/*** 行聚到日志末尾的折叠组里，
+          #        外加最后一次失败的上下文 40 行；
+          #     ③ 若是 target/linux 那层吞的错，单独重跑 `make -C target/linux install V=s`
+          #        —— 只跑镜像组装，几十秒，不看工具链脸色。
+          #   文件再由下一步 upload-artifact 传上来（失败也能下载）。
+          # =========================================================
+          LOGDIR="$GITHUB_WORKSPACE/build-logs"
+          mkdir -p "$LOGDIR"
+          : > "$LOGDIR/build.log"
+
+          set -o pipefail
+          try_build() {                     # $1=轮次名, 其余=make 参数
+            local tag="$1"; shift
+            echo "::group::make $* [$tag]"
+            make "$@" 2>&1 | tee -a "$LOGDIR/build.log"
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            echo "[$tag] make $* -> rc=${rc}"
+            return "$rc"
+          }
+
+          OK=0
+          if try_build "j${JOBS}" -j"${JOBS}"; then
+            echo "多线程编译成功"; OK=1
+          elif try_build "j1" -j1; then
+            echo "单线程编译成功"; OK=1
+          elif try_build "verbose" -j1 V=s; then
+            echo "单线程详细日志编译成功"; OK=1
+          fi
+
+          if [ "$OK" -ne 1 ]; then
+            cp -f "$LOGDIR/build.log" "$LOGDIR/failure.log" 2>/dev/null || true
+
+            echo "::group::失败定位 —— 真实错误行"
+            grep -nE "(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)" \
+              "$LOGDIR/build.log" | tail -40 || echo "(没匹配到 ERROR/Error 行，见下面上下文)"
+            echo "---- 最后 40 行 ----"
+            tail -40 "$LOGDIR/build.log" || true
+            echo "::endgroup::"
+
+            # target/linux 的错会被 subdir.mk 折叠成一行，单独重跑这一段
+            if grep -qE "target/linux.*failed to build|ERROR: target/linux" "$LOGDIR/build.log"; then
+              echo "::group::单独重跑 target/linux install（这一层才是真错误）"
+              make -C target/linux install V=s 2>&1 | tee -a "$LOGDIR/failure.log" | tail -80 || true
+              echo "::endgroup::"
+            fi
+
+            echo "::error::编译失败，完整日志见 artifact build-logs-${{ env.DEVICE_NAME }}-${{ github.run_id }}"
             exit 1
           fi
 
@@ -1297,6 +1442,22 @@ jobs:
           # 全量再冻一次：target 阶段会顺带编出一批 host 包（python3 等），
           # 这些戳只有编译结束才存在。source 模式下它们同样会被自举。
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
+
+      # =========================================================
+      # 18.1 失败时把编译日志带回来
+      #   Actions 网页日志单步骤有截断、滚屏极难，也没法 grep。
+      #   落成 artifact 后直接下载 `less -R` / `grep -n ERROR`，排错快一个量级。
+      #   只在 compile 步真的失败时上传（skipped 不传，避免空包告警）。
+      # =========================================================
+      - name: Upload build logs on failure
+        if: steps.compile.outcome == 'failure'
+        uses: actions/upload-artifact@v5
+        continue-on-error: true
+        with:
+          name: build-logs-${{ env.DEVICE_NAME }}-${{ github.run_id }}
+          path: ${{ github.workspace }}/build-logs
+          if-no-files-found: warn
+          retention-days: 14
 
       # =========================================================
       # 18.5 存新一代缓存
@@ -1585,7 +1746,10 @@ jobs:
 
       - name: Remove old releases
         uses: dev-drprasad/delete-older-releases@v0.3.4
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        # 必须 success()：原条件只有 !cancelled()，编译失败时这一步照样跑，
+        # 而 delete_tags: true 会把旧 tag 删掉 → 已经发出去的下载链接全部 404，
+        # 新固件又没传上去，等于把发布页清空了。
+        if: env.UPLOAD_RELEASE == 'true' && success()
         with:
           keep_latest: 10
           delete_tags: true
