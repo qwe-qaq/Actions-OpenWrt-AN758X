@@ -33,6 +33,17 @@ env:
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
+  # ---- 固件文件名时间戳 ----
+  #   true  = 上传到 Release / Artifact 的文件名里插入构建时间（精确到秒）
+  #           ponwrt-airoha-an7581-fiberhome_an4475-g2-squashfs-sysupgrade-2026-11-13 07:09:12 (Shanghai).itb
+  #   false = 保持 OpenWrt 原始文件名
+  #   注意：改名后「同名覆盖」不再成立，历史资产会一直留在同一 Release 里，
+  #         本 workflow 不做任何删除，需要清理请手动删（单 Release 上限 1000 个资产）。
+  FW_TS_NAME: 'true'
+  #   space = "2026-11-13 07:09:12 (Shanghai)"（好看，但含空格；GitHub 会把资产名里的
+  #           空格转成 "."，URL 里也是 %20，: 在 Windows 上是非法字符，命令行要用引号）
+  #   safe  = "2026-11-13_070912(Shanghai)"（推荐：无空格无冒号，任何系统/脚本都不出问题）
+  FW_TS_STYLE: 'space'
   OPT_CRYPTO_ARM64CE: ${{ github.event.inputs.opt_arm64ce == '1' && '1' || '0' }}
   OPT_CRYPTO_CHACHA:  ${{ github.event.inputs.opt_chacha  == '1' && '1' || '0' }}
   OPT_CRYPTO_EIP93:   ${{ github.event.inputs.opt_eip93   == '1' && '1' || '0' }}
@@ -237,7 +248,8 @@ jobs:
           #   · artifact 名 OpenWrt_firmware_${DEVICE_NAME}${FILE_DATE}
           #   · Release tag  ${DEVICE_NAME}-${REPO_BRANCH}
           #   · 旧 tag 清理   delete_tag_pattern: ^${DEVICE_NAME}-
-          # 固件文件名不受影响（前缀由 OpenWrt 的 CONFIG_VERSION_DIST 决定）。
+          # 固件文件名前缀由 OpenWrt 的 CONFIG_VERSION_DIST 决定；文件名尾部会
+          # 由「Stamp firmware filenames」步骤追加构建时间（见 env.FW_TS_NAME）。
           echo "DEVICE_NAME=ponwrt-${SOC}-${PROFILE}-${HOST_MODE}" >> "$GITHUB_ENV"
           # 每机型一份 config；profile=all 时回退到 SoC 通用配置
           if [ "$PROFILE" = "all" ]; then
@@ -1406,6 +1418,67 @@ jobs:
           echo "FIRMWARE=$PWD" >> "$GITHUB_ENV"
           echo "status=success" >> "$GITHUB_OUTPUT"
 
+      # =========================================================
+      # 21.5 固件文件名追加构建时间（精确到秒，Asia/Shanghai）
+      #   ...-squashfs-sysupgrade.itb  →  ...-squashfs-sysupgrade-2026-11-13 07:09:12 (Shanghai).itb
+      #   必须在 Artifact / Release 上传之前改名，两边拿到的文件名才一致。
+      #   注意：改名后 sha256sums 里的旧名字会失效，本步骤一并重算。
+      # =========================================================
+      - name: Stamp firmware filenames with build time
+        id: stamp
+        if: steps.organize.outputs.status == 'success' && env.FW_TS_NAME == 'true'
+        run: |
+          cd "$FIRMWARE"
+
+          # 时间戳只取一次：文件名、Release 说明、旧资产清理都用同一个值，
+          # 避免跨秒导致「清理不掉自己刚传的那份」。
+          TS_SPACE=$(date '+%Y-%m-%d %H:%M:%S')
+          TS_SAFE=$(date '+%Y-%m-%d_%H%M%S')
+          case "${FW_TS_STYLE:-space}" in
+            safe) TS="${TS_SAFE}(Shanghai)" ;;
+            *)    TS="${TS_SPACE} (Shanghai)" ;;
+          esac
+          echo "FW_TS=${TS}" >> "$GITHUB_ENV"
+          echo "本次文件名时间戳: ${TS}"
+
+          # 双后缀（.img.gz / .tar.gz）不能被 ${f##*.} 拆散
+          get_ext() {
+            case "$1" in
+              *.img.gz) echo ".img.gz" ;;
+              *.tar.gz) echo ".tar.gz" ;;
+              *.*)      echo ".${1##*.}" ;;
+              *)        echo "" ;;
+            esac
+          }
+
+          renamed=0
+          for f in *; do
+            [ -f "$f" ] || continue
+            # 这几种是「描述/校验」文件，名字必须保持原样：
+            #   sha256sums 全量校验、profiles.json 给 owut/ASU 按原名找镜像、
+            #   *.buildinfo 记录 feeds/config 版本
+            case "$f" in
+              sha256sums*|profiles.json|*.buildinfo|*.ipk|*.apk) continue ;;
+            esac
+            ext=$(get_ext "$f")
+            base=${f%"$ext"}
+            mv -f -- "$f" "${base}-${TS}${ext}"
+            echo "  $f  ->  ${base}-${TS}${ext}"
+            renamed=$((renamed + 1))
+          done
+
+          # 改名后重算校验和（sha256sums 自己不能被算进去，先删）
+          rm -f sha256sums
+          sha256sum * > sha256sums 2>/dev/null || true
+
+          echo "已改名文件数: ${renamed}" >> "$GITHUB_STEP_SUMMARY"
+          echo "文件时间戳: ${TS}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$renamed" -eq 0 ]; then
+            echo "::warning::固件目录里没有可改名的产物，Release 将使用原始文件名"
+          fi
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
       - name: Upload firmware directory
         uses: actions/upload-artifact@v5
         if: steps.organize.outputs.status == 'success'
@@ -1433,6 +1506,8 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
           touch release.txt
+          # 有文件名时间戳就用它当「编译时间」，两处不会跨秒对不上
+          BUILD_TIME="${FW_TS:-$(date '+%Y-%m-%d %H:%M:%S') (Shanghai)}"
           {
             echo "## PonWrt 自动编译固件"
             echo ""
@@ -1445,7 +1520,7 @@ jobs:
             echo "| 源码 | ${REPO_URL} |"
             echo "| 分支 | \`${REPO_BRANCH}\` |"
             echo "| 提交 | \`$(cd "$BUILD_ROOT"/openwrt && git rev-parse --short HEAD)\` |"
-            echo "| 编译时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
+            echo "| 编译时间 | ${BUILD_TIME} |"
             echo "| 加密加速 | ARM64CE=${OPT_CRYPTO_ARM64CE} / ChaCha=${OPT_CRYPTO_CHACHA} / EIP93=${OPT_CRYPTO_EIP93} |"
             echo ""
             echo "### 固件文件校验"
@@ -1454,7 +1529,15 @@ jobs:
             echo '```'
             echo ""
             echo "---"
-            echo "> 本 Release 为滚动发布页，仅保留最新一次编译产物。"
+            if [ -n "${FW_TS:-}" ]; then
+              echo "> 本 Release 为滚动发布页；追加了文件名时间戳，历史产物**不删除**，按时间戳区分新旧。"
+              echo "> 固件文件名尾部的 \`${FW_TS}\` 是本次编译时间，取时间戳最大的那份刷机即可。"
+              case "${FW_TS}" in
+                *" "*) echo "> 文件名含空格，命令行下载/校验请用引号包裹（GitHub 会把空格显示成 \`.\`，以 \`%20\` 编码下载不影响使用）。" ;;
+              esac
+            else
+              echo "> 本 Release 为滚动发布页，仅保留最新一次编译产物。"
+            fi
             echo "> 安装前请用 AN758x-Stock2UBI 备份原厂 flash，刷机后恢复 PON/校准数据。"
           } >> release.txt
           echo "status=success" >> "$GITHUB_OUTPUT"
