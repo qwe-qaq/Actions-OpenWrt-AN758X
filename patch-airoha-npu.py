@@ -61,7 +61,9 @@ step6_new = (
 )
 src, k = step6_re.subn(step6_new, src)
 if k != 1:
-    sys.exit("Step6 block matched %d times, expected 1" % k)
+    # 上游格式变化导致未命中时降级跳过，不让整段 diy-part1 失败
+    print("::warning::Step6 block matched %d times, expected 1; skip airoha-npu patch" % k)
+    sys.exit(0)
 print("replaced Step6 block: 1")
 
 # --- 2. 批量替换 $(($(devmem ADDR [2>/dev/null]))) -> $(dm_read ADDR) ---
@@ -70,7 +72,8 @@ devmem_re = re.compile(
 )
 src, n = devmem_re.subn(r"$(dm_read \1)", src)
 if n == 0:
-    sys.exit("no $(($(devmem ...))) site matched")
+    print("::warning::no $(($(devmem ...))) site matched; skip airoha-npu patch")
+    sys.exit(0)
 print("replaced devmem arithmetic sites: %d" % n)
 
 # --- 3. 最后在 json_escape 函数后插入 dm_read（放最后，避免注释被第 2 步替换）---
@@ -88,7 +91,8 @@ dm_read_block = (
 )
 anchor = re.search(r"json_escape\(\) \{.*?\n\}\n", src, re.S)
 if not anchor:
-    sys.exit("anchor json_escape not found")
+    print("::warning::anchor json_escape not found; skip airoha-npu patch")
+    sys.exit(0)
 src = src[:anchor.end()] + dm_read_block + src[anchor.end():]
 
 open(path, "w", encoding="utf-8", newline="\n").write(src)

@@ -50,20 +50,11 @@ else
 fi
 
 # ---------------------------------------------------------
-# 2. uci-defaults：即使保留了旧配置也强制刷成中国时区
+# 2. 时区 / NTP / rebind 白名单
+#    仓库自带的 files/etc/uci-defaults/99-timezone-cn 已含 NTP 服务器与
+#    dnsmasq 重绑定白名单，这里不再用精简版覆盖它。
 # ---------------------------------------------------------
 mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/99-timezone-cn <<'EOF'
-#!/bin/sh
-uci -q batch <<'UCI'
-set system.@system[0].zonename='Asia/Shanghai'
-set system.@system[0].timezone='CST-8'
-commit system
-UCI
-exit 0
-EOF
-chmod +x files/etc/uci-defaults/99-timezone-cn
-echo "✅ uci-defaults 时区脚本已写入"
 
 # ---------------------------------------------------------
 # 3. 补上亚洲时区数据库包 + libffi（python3 _ctypes 需要）
@@ -74,12 +65,12 @@ echo "✅ uci-defaults 时区脚本已写入"
 # ---------------------------------------------------------
 if [ -f .config ]; then
   sed -i '/^CONFIG_PACKAGE_zoneinfo-asia=/d; /^# CONFIG_PACKAGE_zoneinfo-asia is not set/d' .config
-  echo "CONFIG_PACKAGE_zoneinfo-asia=y    # 亚洲时区数据库（中国时区需要）" >> .config
-  echo "✅ zoneinfo-asia 已加入 .config"
+  echo "CONFIG_PACKAGE_zoneinfo-asia=y" >> .config
+  echo "✅ zoneinfo-asia 已加入 .config（亚洲时区数据库，中国时区需要）"
 
   sed -i '/^CONFIG_PACKAGE_libffi=/d; /^# CONFIG_PACKAGE_libffi is not set/d' .config
-  echo "CONFIG_PACKAGE_libffi=y           # python3 _ctypes 需要 ffi.h / libffi.pc" >> .config
-  echo "✅ libffi 已加入 .config"
+  echo "CONFIG_PACKAGE_libffi=y" >> .config
+  echo "✅ libffi 已加入 .config（python3 _ctypes 需要 ffi.h / libffi.pc）"
 fi
 
 # ---------------------------------------------------------
@@ -148,13 +139,11 @@ for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wif
 			log "\$dev：未检测到 160MHz 能力，回落为 \$ht"
 		fi
 		uci -q set wireless.\$dev.country="\$COUNTRY"
-		uci -q set wireless.\$dev.country_ie='1'
 		uci -q set wireless.\$dev.channel="\$CHANNEL"
 		uci -q set wireless.\$dev.htmode="\$ht"
 		log "\$dev (5G): country=\$COUNTRY channel=\$CHANNEL htmode=\$ht"
 	else
 		uci -q set wireless.\$dev.country="\$COUNTRY_24G"
-		uci -q set wireless.\$dev.country_ie='1'
 		uci -q set wireless.\$dev.channel="\$CHANNEL_24G"
 		log "\$dev (2.4G): country=\$COUNTRY_24G channel=\$CHANNEL_24G"
 	fi
@@ -169,9 +158,11 @@ for iface in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=w
 	[ "\$band" = "5g" ] && is5g=1
 	[ -z "\$band" ] && [ "\$hwmode" = "11a" ] && is5g=1
 	if [ "\$is5g" = "1" ]; then
-		uci -q set wireless.\$iface.ssid="TP-LINK_6628_5G"
+		OLD_SSID="\$(uci -q get wireless.\$iface.ssid 2>/dev/null)"
+		[ -z "\$OLD_SSID" ] && uci -q set wireless.\$iface.ssid="PonWrt_5G"
 	else
-		uci -q set wireless.\$iface.ssid="TP-LINK_6628"
+		OLD_SSID="\$(uci -q get wireless.\$iface.ssid 2>/dev/null)"
+		[ -z "\$OLD_SSID" ] && uci -q set wireless.\$iface.ssid="PonWrt_2G"
 	fi
 	changed=1
 done
@@ -196,8 +187,8 @@ if [ -f .config ]; then
   fi
   if ! grep -q "^CONFIG_PACKAGE_iw=y" .config; then
     sed -i '/^CONFIG_PACKAGE_iw=/d; /^# CONFIG_PACKAGE_iw is not set/d' .config
-    echo "CONFIG_PACKAGE_iw=y                       # 无线命令行工具（160MHz 能力检测需要）" >> .config
-    echo "✅ iw 已加入 .config"
+    echo "CONFIG_PACKAGE_iw=y" >> .config
+    echo "✅ iw 已加入 .config（无线命令行工具，160MHz 能力检测需要）"
   fi
 fi
 
@@ -248,28 +239,33 @@ fi
 # apk 软件包源：默认中科大 USTC，双路径兼容
 mkdir -p files/etc/apk/repositories.d
 
-cat > files/etc/apk/repositories.d/distfeeds.list <<'EOF'
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/base
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/luci
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/packages
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/routing
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/telephony
+# 源路径随机型（SOC）与目标架构动态生成：
+#   targets/airoha/<subtarget>/packages 与 packages/<arch>/...
+#   subtarget 取 SOC（an7581/an7583）；架构优先读 .config 的 CONFIG_ARCH，
+#   读不到再回退 aarch64_cortex-a53。避免 an7583 固件拿到 an7581 的源。
+TARGET_SUBTARGET="${SOC:-an7581}"
+TARGET_ARCH="$(sed -n 's/^CONFIG_ARCH="\([^"]*\)"/\1/p' .config 2>/dev/null | head -1)"
+TARGET_ARCH="${TARGET_ARCH:-aarch64_cortex-a53}"
+
+APK_BASE="https://mirrors.ustc.edu.cn/immortalwrt/snapshots"
+APK_LINES="$(cat <<EOF
+$APK_BASE/targets/airoha/$TARGET_SUBTARGET/packages
+$APK_BASE/packages/$TARGET_ARCH/base
+$APK_BASE/packages/$TARGET_ARCH/luci
+$APK_BASE/packages/$TARGET_ARCH/packages
+$APK_BASE/packages/$TARGET_ARCH/routing
+$APK_BASE/packages/$TARGET_ARCH/telephony
 EOF
+)"
 
-cat > files/etc/apk/repositories <<'EOF'
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/targets/airoha/an7581/packages
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/base
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/luci
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/packages
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/routing
-https://mirrors.ustc.edu.cn/immortalwrt/snapshots/packages/aarch64_cortex-a53/telephony
-EOF
+printf '%s\n' "$APK_LINES" > files/etc/apk/repositories.d/distfeeds.list
+printf '%s\n' "$APK_LINES" > files/etc/apk/repositories
 
-echo "✅ apk 软件包源默认 -> USTC snapshots（完整 6 个源，双路径兼容）"
+echo "✅ apk 软件包源默认 -> USTC snapshots（subtarget=$TARGET_SUBTARGET arch=$TARGET_ARCH）"
 
-# 后台菜单不显示"NAS"字样（package/feeds 下是符号链接，grep -r 不跟随，保留作为兼容垫片）
-grep -rl "NAS" package/feeds --include='*.lua' 2>/dev/null \
+# 后台菜单不显示"NAS"字样。package/feeds 下是符号链接目录，grep -r 不跟随，
+# 直接扫 feeds/ 真实源码目录。
+grep -rl "NAS" feeds --include='*.lua' 2>/dev/null \
   | while IFS= read -r f; do
       sed -i "s/_('NAS')/_(' ')/g; s/'NAS'/' '/g" "$f" || true
     done || true
@@ -280,10 +276,12 @@ rm -rf package/feeds/luci/luci-app-argon-config 2>/dev/null || true
 
 # ⚠ package/feeds/luci 下全是符号链接，grep -r 不跟随。改用 feeds/luci（真实目录）。
 grep -rl "argon-config" feeds/luci --include="*.json" 2>/dev/null | while IFS= read -r f; do
-  if python3 -c "import json; json.load(open('$f'))" 2>/dev/null; then
+  # 路径经环境变量传入 Python，避免把 shell 路径拼进源码串造成注入/断串
+  export F="$f"
+  if python3 -c "import json,os; json.load(open(os.environ['F']))" 2>/dev/null; then
     python3 -c "
-import json
-with open('$f', 'r') as fp:
+import json, os
+with open(os.environ['F'], 'r') as fp:
     data = json.load(fp)
 def remove_argon(obj):
     if isinstance(obj, dict):
@@ -299,7 +297,7 @@ def remove_argon(obj):
         for item in obj:
             remove_argon(item)
 remove_argon(data)
-with open('$f', 'w') as fp:
+with open(os.environ['F'], 'w') as fp:
     json.dump(data, fp, indent=2)
 " 2>/dev/null || true
   else
@@ -374,19 +372,33 @@ echo "✅ IPTV 相关菜单位置调整完成"
 # ⚠ package/feeds 下全是符号链接，grep -r 不跟随；改用 feeds/ 真实目录。
 echo "🔍 搜索 LuCI 状态页固件版本行文件..."
 grep -rl "Firmware Version" feeds --include="*.js" 2>/dev/null | while IFS= read -r f; do
-  line_num=$(grep -n "Firmware Version" "$f" 2>/dev/null | head -1 | cut -d: -f1 || echo "")
-  if [ -n "$line_num" ]; then
-    sed -i "${line_num}d" "$f" || true
-    echo "✅ 已从 $f (JS) 中删除固件版本行 (第 $line_num 行)"
-  fi
+  # 只删「含标签且括号平衡」的叶子字符串行；多行结构（括号跨多行）跳过，
+  # 避免整行删除后留下悬空逗号/括号。
+  grep -n "Firmware Version" "$f" 2>/dev/null | while IFS=: read -r line_num rest; do
+    line="$(sed -n "${line_num}p" "$f")"
+    ob=$(printf '%s' "$line" | tr -cd '{' | wc -c); cb=$(printf '%s' "$line" | tr -cd '}' | wc -c)
+    os=$(printf '%s' "$line" | tr -cd '[' | wc -c); cs=$(printf '%s' "$line" | tr -cd ']' | wc -c)
+    if [ "$ob" = "$cb" ] && [ "$os" = "$cs" ]; then
+      sed -i "${line_num}d" "$f" || true
+      echo "✅ 已从 $f (JS) 中删除固件版本行 (第 $line_num 行)"
+    else
+      echo "::warning::$f 第 $line_num 行括号不平衡，跳过删除（疑似多行结构）"
+    fi
+  done
 done || true
 
 grep -rl "Firmware Version" feeds --include="*.htm" --include="*.lua" 2>/dev/null | while IFS= read -r f; do
-  line_num=$(grep -n "Firmware Version" "$f" 2>/dev/null | head -1 | cut -d: -f1 || echo "")
-  if [ -n "$line_num" ]; then
-    sed -i "${line_num}d" "$f" || true
-    echo "✅ 已从 $f (模板) 中删除固件版本行 (第 $line_num 行)"
-  fi
+  grep -n "Firmware Version" "$f" 2>/dev/null | while IFS=: read -r line_num rest; do
+    line="$(sed -n "${line_num}p" "$f")"
+    ob=$(printf '%s' "$line" | tr -cd '{' | wc -c); cb=$(printf '%s' "$line" | tr -cd '}' | wc -c)
+    os=$(printf '%s' "$line" | tr -cd '[' | wc -c); cs=$(printf '%s' "$line" | tr -cd ']' | wc -c)
+    if [ "$ob" = "$cb" ] && [ "$os" = "$cs" ]; then
+      sed -i "${line_num}d" "$f" || true
+      echo "✅ 已从 $f (模板) 中删除固件版本行 (第 $line_num 行)"
+    else
+      echo "::warning::$f 第 $line_num 行括号不平衡，跳过删除（疑似多行结构）"
+    fi
+  done
 done || true
 
 echo "🔍 隐藏 LuCI 页脚版本信息..."
@@ -461,18 +473,24 @@ if [ -n "$SSR_PIDS" ]; then
   fi
 fi
 
+# INPUT 只对 LAN 区域放行 SSR 端口，不对所有接口开放。
+# LAN 接口名优先取 uci network.lan.ifname/device，兜底 br-lan。
+LAN_IF="$(uci -q get network.lan.ifname 2>/dev/null)"
+[ -z "$LAN_IF" ] && LAN_IF="$(uci -q get network.lan.device 2>/dev/null)"
+[ -z "$LAN_IF" ] && LAN_IF="br-lan"
+
 if [ "$FW_VER" = "fw4" ]; then
-  nft add rule inet fw4 input tcp dport "$SSR_PORT" accept comment "SSR Plus+ input" 2>/dev/null || true
+  nft add rule inet fw4 input iifname "$LAN_IF" tcp dport "$SSR_PORT" accept comment "SSR Plus+ input (LAN)" 2>/dev/null || true
   if [ -n "$SSR_UID" ]; then
     nft add rule inet fw4 output meta skuid "$SSR_UID" accept comment "SSR Plus+ output" 2>/dev/null || true
   fi
-  log "fw4 入站/出站规则已配置（转发规则由 SSR Plus+ 自身管理）"
+  log "fw4 入站规则仅限 LAN ($LAN_IF)，出站按 UID 放行（转发规则由 SSR Plus+ 自身管理）"
 else
-  iptables -I INPUT -p tcp --dport "$SSR_PORT" -j ACCEPT -m comment --comment "SSR Plus+ input" 2>/dev/null || true
+  iptables -I INPUT -i "$LAN_IF" -p tcp --dport "$SSR_PORT" -j ACCEPT -m comment --comment "SSR Plus+ input (LAN)" 2>/dev/null || true
   if [ -n "$SSR_UID" ]; then
     iptables -I OUTPUT -m owner --uid-owner "$SSR_UID" -j ACCEPT -m comment --comment "SSR Plus+ output" 2>/dev/null || true
   fi
-  log "fw3 入站/出站规则已配置（转发规则由 SSR Plus+ 自身管理）"
+  log "fw3 入站规则仅限 LAN ($LAN_IF)，出站按 UID 放行（转发规则由 SSR Plus+ 自身管理）"
 fi
 
 exit 0
@@ -482,12 +500,18 @@ echo "✅ SSR Plus+ 入站/出站防火墙脚本已写入（转发规则交给 S
 
 # ========== EIP93 NPU 硬件加密优化 ==========
 echo "🔍 优化 EIP93 NPU 硬件加密调用..."
-mkdir -p files/etc/modules.d
-cat > files/etc/modules.d/zz-eip93 <<'EOF'
+# 仅当 .config 真的编入 kmod-crypto-hw-eip93 时才写模块加载配置；
+# 未编入的机型无条件加载会在开机时 modprobe 失败。
+if grep -q "^CONFIG_PACKAGE_kmod-crypto-hw-eip93=y" .config 2>/dev/null; then
+  mkdir -p files/etc/modules.d
+  cat > files/etc/modules.d/zz-eip93 <<'EOF'
 # EIP93 硬件加密驱动
 crypto-hw-eip93
 EOF
-echo "✅ EIP93 驱动模块加载配置已写入"
+  echo "✅ EIP93 驱动模块加载配置已写入"
+else
+  echo "ℹ️ 未编入 kmod-crypto-hw-eip93，跳过 EIP93 模块加载配置"
+fi
 
 mkdir -p files/etc/uci-defaults
 cat > files/etc/uci-defaults/90-eip93-npu-optimize <<'EOF'
@@ -499,7 +523,7 @@ log() {
 
 i=0
 while [ $i -lt 5 ]; do
-  if [ -d "/sys/class/crypto" ] || lsmod 2>/dev/null | grep -q "crypto"; then
+  if [ -d "/sys/class/crypto" ] || lsmod 2>/dev/null | grep -qE "eip93|crypto_hw|crypto-hw"; then
     break
   fi
   i=$((i + 1))
@@ -569,9 +593,12 @@ uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
 
 log "优化 DHCP 租约时间..."
 for cfg in $(uci -q show dhcp | grep '=dhcp$' | cut -d. -f2 | cut -d= -f1); do
-  uci -q set dhcp.$cfg.leasetime='12h'
-  uci -q set dhcp.$cfg.limit='150'
-  log "  接口 $cfg: 租约 12h, 上限 150 台"
+  # 仅在未设置租约时长 / 地址上限时写默认值，避免覆盖原有网段配置
+  old_leasetime="$(uci -q get dhcp.$cfg.leasetime)"
+  [ -z "$old_leasetime" ] && uci -q set dhcp.$cfg.leasetime='12h'
+  old_limit="$(uci -q get dhcp.$cfg.limit)"
+  [ -z "$old_limit" ] && uci -q set dhcp.$cfg.limit='150'
+  log "  接口 $cfg: 租约 ${old_leasetime:-12h}, 上限 ${old_limit:-150} 台"
 done
 
 log "优化静态租约匹配逻辑..."
@@ -621,9 +648,6 @@ log "优化内核参数..."
 echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
 echo 20 > /proc/sys/vm/dirty_ratio 2>/dev/null || true
 echo 10 > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
-
-log "关闭不必要的后台日志..."
-uci -q set uhttpd.main.no_log='1' 2>/dev/null || true
 
 uci -q commit system
 log "内存优化配置已提交（不影响网络速度）"
@@ -682,9 +706,15 @@ if [ -f /etc/banner ]; then
 fi
 
 if [ -f /etc/config/luci ]; then
-  uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null || true
-  uci commit luci 2>/dev/null || true
-  log "已设置默认主题为 Argon"
+  # argon 主题未编入时 /www/luci-static/argon 不存在，强制指向会得到缺失目录；
+  # 先判断主题目录是否存在，再设置默认主题。
+  if [ -d /www/luci-static/argon ]; then
+    uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null || true
+    uci commit luci 2>/dev/null || true
+    log "已设置默认主题为 Argon"
+  else
+    log "argon 主题目录缺失，保持默认主题"
+  fi
 fi
 
 log "版本信息隐藏完成（三重保险）"

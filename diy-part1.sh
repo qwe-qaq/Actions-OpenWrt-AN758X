@@ -57,6 +57,10 @@ ADD_UPNP=false         # UPnP
 # 默认关闭：FTTR 是 H3C 私有协议，需要额外的 FPGA 驱动和 Rust 工具链，
 #   普通 PON 网关用不到，编进去会大幅增加编译时间和镜像大小。
 ADD_FTTR=false         # FTTR 全套（kmod-h3c-fmcs + h3c-fmcs-firmware + h3c-fttr-tools + luci-app-fttr）
+# 子开关在 set -euo pipefail 下必须有默认值，未由 env 注入时引用未定义变量会直接报错
+ADD_FMCS="${ADD_FMCS:-false}"
+ADD_FMCS_FW="${ADD_FMCS_FW:-false}"
+ADD_FTTR_TOOLS="${ADD_FTTR_TOOLS:-false}"
 FTTR_PROFILE="${PROFILE:-none}"  # h3c_hm2004-du 即可。
 
 clone() {  # clone <url> <dir> [branch]
@@ -103,21 +107,24 @@ grep -q '^src-git helloworld' feeds.conf.default || \
 # =========================================================
 if [ "$ADD_LUCI_APP" = "true" ]; then
   LUCI_APP_URL="https://github.com/qwe-qaq/luci-app"
-  LUCI_APP_TMP="$(mktemp -d)/luci-app"
+  LUCI_APP_TMP_PARENT="$(mktemp -d)"
+  LUCI_APP_TMP="$LUCI_APP_TMP_PARENT/luci-app"
   if ! clone "$LUCI_APP_URL" "$LUCI_APP_TMP" main; then
     echo "::error::qwe-qaq/luci-app 拉取失败，natmode / pon-status 会被 defconfig 剔除"
+    rm -rf "$LUCI_APP_TMP_PARENT"
     exit 1
   fi
   for p in luci-app-natmode luci-app-pon-status; do
     if [ ! -f "$LUCI_APP_TMP/$p/Makefile" ]; then
       echo "::error::$LUCI_APP_TMP/$p/Makefile 不存在，包无法被索引"
+      rm -rf "$LUCI_APP_TMP_PARENT"
       exit 1
     fi
     rm -rf "$PKG_DIR/$p"
     cp -r "$LUCI_APP_TMP/$p" "$PKG_DIR/"
     echo "✅ 已拷贝: $p"
   done
-  rm -rf "$LUCI_APP_TMP"
+  rm -rf "$LUCI_APP_TMP" "$LUCI_APP_TMP_PARENT"
 fi
 
 # =========================================================
@@ -236,7 +243,7 @@ done
 
 if [ -n "$HARD_MISS" ]; then
   echo "::error::以下必装插件未进入 tmp/.packageinfo，defconfig 会把 .config 里的 =y 静默剔除:$HARD_MISS"
-  echo "  已索引缺失清单:$INDEX_MISS"
+  echo "  已索引缺失清单:$HARD_MISS"
   exit 1
 fi
 

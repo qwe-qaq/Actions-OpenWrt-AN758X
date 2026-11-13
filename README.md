@@ -34,8 +34,6 @@
 | 工作流 | 触发 | 作用 |
 |---|---|---|
 | `build-ponwrt.yml` | 手动 | 恢复缓存 → 编译 → 存缓存 → 轮换旧代 |
-| `warm-cache.yml` | 手动 / 每周一 03:17 | 预热。`soc` 和 `prebuilt_host` 都是三选一，两个都选「和」的选项 = 4 个 job 并行 |
-| `cache-keepalive.yml` | 每 3 天 | 逐条真实恢复，避开 `actions/cache` 的 7 天未访问回收 |
 | `cache-clean.yml` | 手动 / 每周一 04:20 | `rollover` 每族留最新一代 / `backup` 只清 Release 备份 / `all` 全删 |
 
 ## 支持的机型
@@ -134,7 +132,7 @@ golang 和 rust 每轮都在从源码自举。
 
 **dl 缓存**（源码包，2~5 GB）单独一条，key 按周滚动 `ponwrt-dl-<源站 slug>-<分支>-<YYYYWW>`（`pbs05/ponwrt` → `pbs05-ponwrt`，与工具链 key 同一套规则）。保存在 `make download` 之后、编译之前——350 分钟一到 job 直接 cancel，放最后用 `always()` 也来不及跑。
 
-**两种 host 模式不共用缓存**：`HOST_MODE` 进前缀。prebuilt 在 `staging_dir` 里留的是指向 runner 的符号链接，source 留的是真二进制，混用会让 make 误判「已安装」并在编译期报一个完全对不上的错。**warm-cache 必须和主流程选同一个模式**，否则预热白跑。
+**两种 host 模式不共用缓存**：`HOST_MODE` 进前缀。prebuilt 在 `staging_dir` 里留的是指向 runner 的符号链接，source 留的是真二进制，混用会让 make 误判「已安装」并在编译期报一个完全对不上的错。
 
 **rust 包的离线限制**：`h3c-fttr-tools` 的 Makefile 用 `cargo install --locked --frozen`，`--frozen` 禁止联网、只认 `dl/cargo` 里已有的 crate。`scripts/patch-cargo-offline.sh` 把 `--frozen` / `--offline` 摘掉，`--locked` 保留（版本仍锁死）。
 
@@ -205,4 +203,3 @@ openssl speed -evp chacha20-poly1305
 - 只有 `scope=firmware` 且编译成功才发 Release；`toolchain-only` 不发，空固件目录会跳过。
 - Release tag 固定为 `<机型>-<分支>`，每次覆盖，所以每个机型只有一份固件，不是「保留最近 N 份」。
 - NPU 只在三层路由模式生效，纯 AP 桥接时整机吞吐会掉到 2000 Mbps 左右。
-- `repository_dispatch` 触发时所有 choice 输入都是空，走的是各 env 的回退值。
