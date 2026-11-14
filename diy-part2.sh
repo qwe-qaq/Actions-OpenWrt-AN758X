@@ -564,68 +564,6 @@ EOF
 chmod +x files/etc/uci-defaults/90-eip93-npu-optimize
 echo "✅ EIP93 NPU 优化脚本已写入"
 
-# ========== DHCP 租约与匹配逻辑优化 ==========
-echo "🔍 优化 DHCP 租约与匹配逻辑..."
-mkdir -p files/etc/uci-defaults
-cat > files/etc/uci-defaults/95-dhcp-optimize <<'EOF'
-#!/bin/sh
-log() {
-  logger -t dhcp-optimize "$@"
-  echo "[dhcp-optimize] $@"
-}
-
-i=0
-while [ $i -lt 10 ]; do
-  if [ -f /etc/config/dhcp ]; then
-    break
-  fi
-  i=$((i + 1))
-  sleep 1
-done
-
-[ -f /etc/config/dhcp ] || { log "未找到 dhcp 配置，跳过"; exit 0; }
-
-log "优化 dnsmasq 全局配置..."
-uci -q set dhcp.@dnsmasq[0].cachesize='1000'
-uci -q set dhcp.@dnsmasq[0].localuse='1'
-uci -q set dhcp.@dnsmasq[0].no_negcache='1'
-uci -q set dhcp.@dnsmasq[0].rebind_protection='1'
-
-log "优化 DHCP 租约时间..."
-for cfg in $(uci -q show dhcp | grep '=dhcp$' | cut -d. -f2 | cut -d= -f1); do
-  # 仅在未设置租约时长 / 地址上限时写默认值，避免覆盖原有网段配置
-  old_leasetime="$(uci -q get dhcp.$cfg.leasetime)"
-  [ -z "$old_leasetime" ] && uci -q set dhcp.$cfg.leasetime='12h'
-  old_limit="$(uci -q get dhcp.$cfg.limit)"
-  [ -z "$old_limit" ] && uci -q set dhcp.$cfg.limit='150'
-  log "  接口 $cfg: 租约 ${old_leasetime:-12h}, 上限 ${old_limit:-150} 台"
-done
-
-log "优化静态租约匹配逻辑..."
-static_count=$(uci -q show dhcp | grep -c "=host$" || echo 0)
-log "  静态绑定数量: $static_count"
-
-if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:router"; then
-  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:router'
-fi
-if ! uci -q get dhcp.@dnsmasq[0].dhcp_option | grep -q "option:broadcast"; then
-  uci -q add_list dhcp.@dnsmasq[0].dhcp_option='option:broadcast'
-fi
-
-uci -q commit dhcp
-log "DHCP 优化配置已提交"
-
-if [ -x /etc/init.d/dnsmasq ]; then
-  /etc/init.d/dnsmasq restart >/dev/null 2>&1
-  log "dnsmasq 已重启"
-fi
-
-log "DHCP 优化完成"
-exit 0
-EOF
-chmod +x files/etc/uci-defaults/95-dhcp-optimize
-echo "✅ DHCP 租约优化脚本已写入"
-
 # ========== 运存（内存）容量优化（不牺牲网络速度） ==========
 echo "🔍 优化运存占用（确保网络高速）..."
 mkdir -p files/etc/uci-defaults
@@ -690,12 +628,14 @@ if [ -f /etc/openwrt_version ]; then
   log "已清空 /etc/openwrt_version"
 fi
 
-log "清理 LuCI 状态页版本信息..."
-for f in /usr/lib/lua/luci/controller/status.lua \
-         /usr/lib/lua/luci/view/status/index.htm \
+log "清理 LuCI 状态页版本信息（仅视图文件，不动 controller 注册）..."
+# controller 负责菜单/路由注册，设备端按文本整行删除有误删注册行的风险；
+# 版本标签在构建期已由 scripts/patch-luci-version.sh 处理，这里只对现存视图文件
+# 按 i18n 标签调用 _('Firmware Version') / _('固件版本') 做锚点删除。
+for f in /usr/lib/lua/luci/view/status/index.htm \
          /www/luci-static/resources/view/status/index.js; do
   if [ -f "$f" ]; then
-    sed -i "/Firmware Version/d; /固件版本/d" "$f" 2>/dev/null || true
+    sed -i "/_\('Firmware Version'\)/d; /_\('固件版本'\)/d" "$f" 2>/dev/null || true
     log "已清理 $f"
   fi
 done
