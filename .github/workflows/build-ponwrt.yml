@@ -608,6 +608,27 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      # 本板（AN4475-G2 / HG5382A）是贴片 paged BOSA@0x51，没有 SFP EEPROM，
+      # 数字 PON PHY 的 SFP_STA bit0 恒为 0 → optical_signal 恒真 →
+      # pon0-los 永不置位，拔纤后光信号灯也不亮。补 .get_signal_status，
+      # 改用 DDMI 收光窗口 0x68 判有无光（阈值 raw>=32，约 -25 dBm）。
+      - name: Patch PON drivers (BOSA optical signal)
+        run: |
+          cd "$BUILD_ROOT/openwrt"
+          P="$GITHUB_WORKSPACE/patches/0001-airoha-paged-bosa-report-optical-signal.patch"
+          D=feeds/pon_drivers/airoha-pon-frontends
+          [ -f "$P" ] || { echo "::error::缺少补丁 $(basename "$P")"; exit 1; }
+          [ -d "$D" ] || { echo "::error::驱动 feed 未就绪: $D"; exit 1; }
+          if patch -p1 -d "$D" --dry-run --forward < "$P" >/dev/null 2>&1; then
+            patch -p1 -d "$D" --forward < "$P"
+            echo "已应用 BOSA 光信号补丁（阈值 -25 dBm）"
+          elif patch -p1 -d "$D" --dry-run --reverse < "$P" >/dev/null 2>&1; then
+            echo "补丁已在源码树中，跳过"
+          else
+            echo "::error::BOSA 光信号补丁无法应用：上游 airoha-paged-bosa-main.c 已变更，需更新 patches/0001-*"
+            exit 1
+          fi
+
       - name: Pull optional plugins (diy-part1.sh)
         run: |
           cd "$BUILD_ROOT/openwrt"

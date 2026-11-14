@@ -1,0 +1,75 @@
+From: PonWrt AN7581 bring-up
+Subject: [PATCH] airoha-pon-frontends: report optical signal from DDMI RX power
+
+The paged BOSA frontend does not implement .get_signal_status, so
+airoha_pon_frontend_get_signal_status() returns a zeroed status with
+signal_valid = false. The xpon core then falls back to the digital PON PHY
+SFP_STA bit, which is always zero on boards whose optics hangs off I2C with
+no SFP EEPROM. optical_signal therefore reads "present" with the fibre
+unplugged, so the pon0-los trigger never asserts and the LOS LED stays dark
+no matter what the LED nodes are bound to.
+
+Read the DDMI receive power word at 0x68 and treat anything at or above the
+configured threshold as signal present. Threshold is 32 in 0.1 uW units,
+i.e. 10 * log10(32) = -24.95 dBm.
+--- a/src/airoha-paged-bosa-main.c
++++ b/src/airoha-paged-bosa-main.c
+@@ -15,6 +15,18 @@
+ #define AIROHA_BOSA_CAL_HEADER_SIZE 0x80
+ #define AIROHA_BOSA_CAL_NATIVE      1
+ 
++/*
++ * A paged BOSA sits behind an I2C window and has no SFP EEPROM, so the digital
++ * PON PHY reports SFP_STA as all zero and the consumer would read that as "no
++ * loss" forever. Use the DDMI RX power window as the signal evidence instead:
++ * the 0.1 uW unit floor is 0, so anything at or above this threshold means a
++ * real receiver input is present.
++ *
++ * raw is in 0.1 uW units and dBm = 10 * log10(raw / 10), so the boundary below
++ * sits at 10 * log10(32) = -24.95 dBm. A dark receiver reads 0.
++ */
++#define AIROHA_BOSA_RX_POWER_PRESENT 32	/* 0.1 uW units, about -25 dBm */
++
+ static const struct airoha_paged_bosa_chip *const bosa_chips[] = {
+ 	&airoha_bosa_gn28l95,
+ 	&airoha_bosa_ux3363,
+@@ -268,6 +280,31 @@
+ 	return ret;
+ }
+ 
++/*
++ * The DDMI window at 0x60-0x69 is reachable on every page without switching,
++ * so this stays cheap enough for link polling. Carry the raw word in los_raw
++ * for tracing; signal_present is what the link poll consumes.
++ */
++static int
++bosa_get_signal_status(struct airoha_pon_frontend *frontend,
++                       struct airoha_pon_frontend_signal_status *status)
++{
++	struct airoha_paged_bosa *bosa = airoha_pon_frontend_priv(frontend);
++	u8 raw[2];
++	int ret;
++
++	mutex_lock(&bosa->lock);
++	ret = airoha_paged_bosa_read(bosa, 0x68, raw, sizeof(raw));
++	mutex_unlock(&bosa->lock);
++	if (ret)
++		return ret;
++
++	status->los_raw = get_unaligned_be16(raw);
++	status->signal_present = status->los_raw >= AIROHA_BOSA_RX_POWER_PRESENT;
++	status->signal_valid = true;
++	return 0;
++}
++
+ static int
+ bosa_get_diagnostics(struct airoha_pon_frontend *frontend,
+                      struct airoha_pon_frontend_diagnostics *diagnostics)
+@@ -310,6 +347,7 @@
+ static const struct airoha_pon_frontend_ops bosa_frontend_ops = {
+ 	.prepare = bosa_prepare,
+ 	.unprepare = bosa_unprepare,
++	.get_signal_status = bosa_get_signal_status,
+ 	.get_diagnostics = bosa_get_diagnostics,
+ 	.get_link_config = bosa_get_link_config,
+ 	.set_tx_enable = bosa_set_tx_enable,
