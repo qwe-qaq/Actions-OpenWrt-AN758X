@@ -1207,36 +1207,7 @@ jobs:
               echo "::endgroup::"
             fi
 
-            # 写进 run Summary：artifact 是 run 的附件，run 被清理就一起没了，Summary 不会
-            {
-              echo "## ❌ 编译失败：\`${DEVICE_NAME}\`"
-              echo ""
-              echo "| 项 | 值 |"
-              echo "| --- | --- |"
-              echo "| run | [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |"
-              echo "| profile | \`${PROFILE}\` |"
-              echo "| artifact | \`build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}\` ← run 页面最底部 **Artifacts** 区，保留 14 天 |"
-              echo ""
-              echo "### 真实错误行"
-              echo '```text'
-              grep -nE '(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)|unable to select packages|no such package|Image too big' \
-                "$LOGDIR/build.log" | tail -60 | tr -d '\r' || echo "(没匹配到 ERROR/Error 行，看下面末尾)"
-              echo '```'
-              echo ""
-              echo "### build.log 末尾 40 行"
-              echo '```text'
-              tail -40 "$LOGDIR/build.log" | tr -d '\r'
-              echo '```'
-              if [ -f "$LOGDIR/install.log" ]; then
-                echo ""
-                echo "### install.log（target/linux 单独重跑）末尾 60 行"
-                echo '```text'
-                tail -60 "$LOGDIR/install.log" | tr -d '\r'
-                echo '```'
-              fi
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            echo "::error::编译失败 —— 真实错误行已写进 Summary（下方 Summary 标签页）；完整日志见 artifact build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}，run 页面地址 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "::error::编译失败 —— 真实错误行见本页 Annotations 与 Summary；完整日志见 artifact build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}"
             exit 1
           fi
 
@@ -1247,9 +1218,64 @@ jobs:
           # 再冻一次：target 阶段顺带编出的 host 包（python3 等）只有这时才有戳
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
+      # 独立成步、条件写 failure()：只在 if 里写 `steps.x.outcome == 'failure'` 会被
+      # 隐式加上 success()，编译一失败本步直接 skipped —— 日志、注解、Summary 全丢。
+      - name: Report build failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          LOG="$GITHUB_WORKSPACE/build-logs/build.log"
+          if [ ! -f "$LOG" ]; then
+            echo "没有 build-log（失败发生在编译之前），跳过诊断"
+            echo "::error::构建失败，但没有编译日志 —— 看上方失败步骤的输出"
+            exit 0
+          fi
+
+          # 注解：run 页面首屏就能看到，不用登录、不用下载 artifact。
+          # 单步最多 10 条 error 注解，这里只发 4 条，多的会被 GitHub 丢掉。
+          ERRS=$(grep -nE '(^|[[:space:]])(ERROR:|error:|\*\*\* .*Error [0-9]+|make(\[[0-9]+\])?: \*\*\*)|unable to select packages|no such package|Image too big' \
+                   "$LOG" | tail -20 | tr -d '\r' || true)
+          if [ -n "$ERRS" ]; then
+            # 只发最后 4 条：越靠后越接近根因，前面的多半是包装层
+            while IFS= read -r l; do
+              [ -n "$l" ] || continue
+              # % 是 workflow command 的转义符，不转义会把注解吃掉
+              echo "::error::$(printf '%s' "$l" | sed 's/%/%25/g' | cut -c1-300)"
+            done <<< "$(tail -4 <<< "$ERRS")"
+          else
+            echo "::error::没匹配到 ERROR/Error 行，见 Summary 里的日志末尾"
+          fi
+
+          {
+            echo "## ❌ 编译失败：\`${DEVICE_NAME}\`"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| run | [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |"
+            echo "| profile | \`${PROFILE}\` |"
+            echo "| artifact | \`build-logs-${DEVICE_NAME}-${GITHUB_RUN_ID}\` ← run 页面最底部 **Artifacts** 区，保留 14 天 |"
+            echo ""
+            echo "### 真实错误行"
+            echo '```text'
+            echo "${ERRS:-（没匹配到 ERROR/Error 行，看下面末尾）}"
+            echo '```'
+            echo ""
+            echo "### build.log 末尾 40 行"
+            echo '```text'
+            tail -40 "$LOG" | tr -d '\r'
+            echo '```'
+            if [ -f "$GITHUB_WORKSPACE/build-logs/install.log" ]; then
+              echo ""
+              echo "### install.log（target/linux 单独重跑）末尾 60 行"
+              echo '```text'
+              tail -60 "$GITHUB_WORKSPACE/build-logs/install.log" | tr -d '\r'
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # 失败时带回日志：网页日志会截断，落成 artifact 才能 grep
       - name: Upload build logs on failure
-        if: steps.compile.outcome == 'failure'
+        if: failure()
         uses: actions/upload-artifact@v5
         continue-on-error: true
         with:
