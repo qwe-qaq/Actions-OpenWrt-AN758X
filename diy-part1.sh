@@ -1,10 +1,9 @@
 #!/bin/bash
 # ================================================================
-# diy-part1.sh —— 只做一件事：拉取可选插件到 package/custom
-# 运行目录: ponwrt 源码根目录（feeds 安装之后、加载 .config 之前）
-#
-# 用法：把需要的插件开关改成 true，再到 configs/<机型>.config 里
-#       把对应 "# CONFIG_PACKAGE_xxx is not set" 改成 "=y"
+# diy-part1.sh —— 拉取可选插件到 package/custom
+# 运行目录: ponwrt 源码根目录（feeds 装完之后、加载 .config 之前）
+# 用法: 开关改 true，同时把 configs/<机型>.config 里对应的
+#       "# CONFIG_PACKAGE_xxx is not set" 改成 "=y"
 # ================================================================
 echo "=========================================="
 echo "拉取可选插件 (diy-part1.sh)"
@@ -13,18 +12,12 @@ PKG_DIR="package/custom"
 mkdir -p "$PKG_DIR"
 # ---------------------------------------------------------
 # 插件开关
-# 默认开启：Airoha SoC 状态页（config 里已 =y，必须拉否则 defconfig 会剔除）
-#
-# 温度不再用 luci-app-temp-status —— 由 autocore 的 /sbin/tempinfo 提供，
-# 见 files/sbin/tempinfo（概览页「温度」行：CPU / WiFi / PON 温度 + 光功率）
+# ⚠ 关掉某个开关，defconfig 会把 config 里对应的 =y 静默剔除 —— 两处必须一起改。
+# ⚠ 标「只用 feeds」的，是本体（mosdns/smartdns/xray-core/sing-box）feeds 已有
+#   同名包；第三方源再拉一份会让索引出现两个同名 Package，行为不可预期。
+#   故只拷 luci 前端，本体一律用 feeds 的。
+# 温度不走插件：autocore 的 /sbin/tempinfo 提供（见 files/sbin/tempinfo）
 # ---------------------------------------------------------
-# ⚠ 下面这些包都在 configs/an7581.config 与 an7583.config 里 =y 了，
-#   关掉开关会让 defconfig 把 =y 静默剔除 —— 两处必须一起改。
-#
-# ⚠ 标了「只用 feeds」的四个，是它们的本体（mosdns / smartdns / xray-core /
-#   sing-box）feeds 里已经有同名包，第三方源再拉一份会让索引里出现两个同名
-#   Package，package-metadata 按扫描顺序挑一个，行为不可预期。所以只拷 luci
-#   前端，本体一律用 feeds 的。
 ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Frame Engine/PPE）
 ADD_FLUENT=true        # luci-theme-fluent：Fluent 2 风格主题
 ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
@@ -47,10 +40,8 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
                         #   ├─ luci-app-igmpproxy    IGMP Proxy 组播代理 Web 界面
                         #   └─ luci-app-ledpanel    面板 LED 控制（系统 → 面板 LED）
-                        #      ★只有 configs/fiberhome_an4475-g2.config 里 =y：
-                        #        灯位映射是这块板的 PCA9555 脚位，换机型不适用
-# 下面这几个开关都能被环境变量覆盖（: ${VAR:=默认} 的写法）：
-# workflow 里选了「不拉私有仓库」时会注入 ADD_FTTR=false，整段直接跳过。
+                        #      ★仅 an4475-g2 的 config =y：灯位是这块板的 PCA9555 脚位
+# 以下开关可被环境变量覆盖（: ${VAR:=默认}）；选「不拉私有仓库」时注入 ADD_FTTR=false
 : "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
 : "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
 : "${ADD_FTTR_TOOLS:=true}" # openwrt-fttr：fttrd 控制器 + fttrctl（Rust 包）
@@ -58,14 +49,10 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
 : "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面包（公开 CI 生成的 package 分支）
                             # （前三个来自 openwrt-fttr 私有仓库；界面包单独拉，见下方）
 
-# 这四个包只对 HM2004-DU 有意义：驱动按 @(TARGET_airoha_an7581) 限定了
-# target，界面和后端都围着重型 FTTR 主从设备转。workflow 会把 PROFILE
-# 导出成环境变量，非 2004 机型直接跳过，不白花 clone 时间；本地手工跑
-# （PROFILE 为空）按 2004 处理。
-# ⚠ 不能默认成 h3c_hm2004-du：warm-cache.yml 也会调这个脚本，而它不设
-#   PROFILE（缓存与机型无关），更没有私有仓库凭证那三步 —— 默认成 h3c 会让
-#   它去 clone 私有仓库 openwrt-fttr，然后因 "could not read Username" 失败。
-#   本地手工跑 h3c 机型时，显式 PROFILE=h3c_hm2004-du 即可。
+# FTTR 四件套只对 HM2004-DU 有意义（DEPENDS 带 @(TARGET_airoha_an7581)）。
+# workflow 把 PROFILE 导出为环境变量，非 2004 机型直接跳过，不白花 clone 时间。
+# ⚠ 不能默认成 h3c_hm2004-du：warm-cache.yml 也调本脚本却不设 PROFILE、也没有
+#   私有仓库凭证，默认成 h3c 会去 clone 私有 feed 然后 "could not read Username"。
 FTTR_PROFILE="${PROFILE:-none}"
 
 clone() {  # clone <url> <dir> [branch]
@@ -85,20 +72,14 @@ clone() {  # clone <url> <dir> [branch]
   return 1
 }
 # =========================================================
-# qwe3017/luci-app —— 四个 LuCI 插件的来源
-#
-# 这是一个 monorepo，结构为：
-#   luci-app/
-#   ├── luci-app-natmode/
-#   ├── luci-app-pon-status/
-#   ├── luci-app-igmpproxy/
-#   └── luci-app-ledpanel/   面板 LED 语义守护（只有 AN4475-G2 的 config 启用）
+# qwe-qaq/luci-app —— monorepo，四个 LuCI 插件：
+#   luci-app-natmode / luci-app-pon-status / luci-app-igmpproxy / luci-app-ledpanel
 # =========================================================
 if [ "$ADD_LUCI_APP" = "true" ]; then
   LUCI_APP_URL="https://github.com/qwe-qaq/luci-app"
   LUCI_APP_TMP="$(mktemp -d)/luci-app"
   if ! clone "$LUCI_APP_URL" "$LUCI_APP_TMP" main; then
-    echo "::error::qwe3017/luci-app 拉取失败，natmode / pon-status / igmpproxy / ledpanel 会被 defconfig 剔除"
+    echo "::error::qwe-qaq/luci-app 拉取失败，natmode / pon-status / igmpproxy / ledpanel 会被 defconfig 剔除"
     exit 1
   fi
   for p in luci-app-natmode luci-app-pon-status luci-app-igmpproxy luci-app-ledpanel; do
@@ -114,22 +95,12 @@ if [ "$ADD_LUCI_APP" = "true" ]; then
 fi
 
 # =========================================================
-# h3c-fmcs / openwrt-fttr / h3c-fmcs-firmware —— FTTR 后端三件套 ★HM2004-DU 专属
-# 源：qwe-qaq/openwrt-fttr（私有仓库）
-# ⚠ 这里必须用「裸 URL」：凭证由 workflow 的 GIT_ASKPASS 在认证时回调注入，
-#   千万别拼 token —— clone 的 echo 会把它打进日志。
-# ⚠ 该仓库是 feed 形态（根目录直接是包目录），拷进 package/custom/ 即可。
-#   内核包 / 固件包目录名 = 包名；用户态 Rust 包在 2026-11 由 h3c-fttr-tools
-#   改名为 openwrt-fttr（Makefile 已显式写死 PKG_NAME:=openwrt-fttr 与
-#   BuildPackage,openwrt-fttr），但源目录在不同快照里可能是 fttr /
-#   fttr-tools / h3c-fttr-tools。下面按候选名探测，统一拷成
-#   package/custom/openwrt-fttr/，让索引包名与 config 的 =y 对得上。
-#   h3c-fmcs           KernelPackage → 索引里叫 kmod-h3c-fmcs，DEPENDS 限定
-#                      @(TARGET_airoha_an7581)，另依赖 +kmod-spi-gpio
-#   openwrt-fttr       Rust 包，硬 include feeds/packages/lang/rust/rust-package.mk
-#   h3c-fmcs-firmware  纯数据包，FPGA 比特流 → /lib/firmware/FTTR_TOP.sbit
-# ⚠ h3c-fmcs 是 KernelPackage，索引里的名字是 kmod-h3c-fmcs。下面的包索引
-#   校验内置了这层映射（pkgname_of），看到的是 ✅ h3c-fmcs → kmod-h3c-fmcs。
+# FTTR 后端三件套 ★HM2004-DU 专属，源 qwe-qaq/openwrt-fttr（私有）
+# ⚠ 必须用裸 URL：凭证由 workflow 的 GIT_ASKPASS 注入，拼 token 会被 clone 打进日志。
+# ⚠ 该仓库是 feed 形态（根目录即包目录）。用户态 Rust 包已改名 openwrt-fttr，
+#   但源目录可能是 fttr / fttr-tools / h3c-fttr-tools，故按候选名探测后统一拷成
+#   package/custom/openwrt-fttr/，保证索引包名与 config 的 =y 对得上。
+# ⚠ h3c-fmcs 是 KernelPackage，索引里叫 kmod-h3c-fmcs（校验里由 pkgname_of 映射）。
 # =========================================================
 if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   # 仓库与分支由 workflow 注入，本地手工跑时回退到下面的默认值
@@ -189,22 +160,12 @@ fi
 
 # =========================================================
 # luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★HM2004-DU 专属
-# 源：LazuliKao/luci-app-fttr 的 package 分支（公开仓库，CI 生成的完整
-#     OpenWrt 包：根目录直接是 Makefile + htdocs/ + po/ + root/）。
-# 2026-11-08 起上游把构建产物发布到该分支，Makefile 不再用
-# PKG_SOURCE_URL / PKG_HASH 下载 nightly tarball —— 前端 JS 已随包提交，
-# 因此编译阶段不再联网取前端、也不存在 hash 失效问题。
-# ⚠ package 分支是 orphan + force-push 生成（每次只有 1 个 commit），
-#   必须用 --depth 1 每次重新 clone，不能复用旧目录。
-# ⚠ Makefile 里 LUCI_DEPENDS:=+luci-base +rpcd +openwrt-fttr，后端仍由
-#   上面的私有 feed 提供；私库里若还留着旧 luci-app-fttr/ 目录，本脚本
-#   不会拷它（已从 FTTR_FEED_PKGS 移除），可自行清理避免混淆。
-# ⚠ CI 生成的 Makefile 漏了「# call BuildPackage - OpenWrt buildroot
-#   signature」这行标记。include/scan.mk 第 77 行用文本 grep 找
-#   'call BuildPackage' 决定哪些 Makefile 进 FILELIST（不展开 include），
-#   缺这行 → 目录不进扫描列表 → 不 DUMP → tmp/.packageinfo 里没有这个包，
-#   表现就是「包拷好了、别的包全 ✅、唯独 luci-app-fttr ❌」，且没有 dump.txt。
-#   所以每次拷贝后幂等补一行，见下方。
+# 源 LazuliKao/luci-app-fttr 的 package 分支（CI 产物，前端 JS 随包提交，
+# 编译期不联网、无 hash 失效问题）。后端仍由上面的私有 feed 提供。
+# ⚠ 该分支 orphan + force-push（每次只 1 个 commit），必须 --depth 1 重拉。
+# ⚠ 上游 Makefile 漏了 "# call BuildPackage" 标记行。scan.mk 用文本 grep 找它
+#   决定哪些 Makefile 进 FILELIST（不展开 include），缺了就不 DUMP、不进
+#   tmp/.packageinfo，表现为「别的包全 ✅ 唯独它 ❌ 且无 dump.txt」。故下方幂等补。
 # =========================================================
 if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   # 用独立变量名，不与 workflow 里指向「源码仓 main 分支」的 FTTR_LUCI_* 冲突
@@ -241,13 +202,9 @@ fi
 
 
 # --- Airoha SoC 状态页（NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表）---
-# 包名由目录名决定（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})），
-# 目录必须是 luci-app-airoha-npu，否则 config 里的符号对不上。
-#
-# 源用 luanmuc/luci-app-airoha-npu（rchen14b 的 fork 改进版）：
-#   - 自带 po/zh_Hans 完整中文翻译（48 条）
-#   - 无 rchen14b 那种「根目录 + 同名子目录」重复结构，feed 索引不会中断
-#   - 修了 luci.mk 的 include 路径、加了独立 CPU 温度与 PLL 备用频率
+# 目录名决定包名（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})），必须是
+# luci-app-airoha-npu，否则 config 里的符号对不上。
+# 源 luanmuc/luci-app-airoha-npu：自带 zh_Hans 翻译，无「根目录+同名子目录」坏结构。
 if [ "$ADD_AIROHA_NPU" = "true" ]; then
   if ! clone https://github.com/luanmuc/luci-app-airoha-npu "$PKG_DIR/luci-app-airoha-npu" main; then
     echo "::error::luci-app-airoha-npu 拉取失败，后续 defconfig 会静默剔除该包"
@@ -259,12 +216,8 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
     exit 1
   fi
   echo "   版本: $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-airoha-npu/Makefile" 2>/dev/null)"
-  # =========================================================
-  # 关键：po 文件名必须改成 airoha-npu.po
-  #   luci.mk 的 i18n 规则按 po 主名生成 lmo，运行时却按 LUCI_BASENAME
-  #   （= airoha-npu）查找。上游两份 po 都叫 luci-app-airoha-npu.po，会生成
-  #   luci-app-airoha-npu.zh-cn.lmo → 前端找不到 → 中文不生效。
-  # =========================================================
+  # po 必须改名 airoha-npu.po：luci.mk 按 po 主名生成 lmo，运行时按
+  # LUCI_BASENAME(=airoha-npu) 查找，不改名则中文不生效。
   PODIR="$PKG_DIR/luci-app-airoha-npu/po"
   if [ -f "$PODIR/zh_Hans/luci-app-airoha-npu.po" ]; then
     # 确保 Language 头是 zh_Hans（上游头部缺该字段时 po2lmo 可能识别异常）
@@ -280,10 +233,8 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
 fi
 
 # --- passwall ---
-# 源已从 xiaorouji 迁到 Openwrt-Passwall 组织（旧地址 404）。
-# ⚠ 只拷 luci-app-passwall 子目录：openwrt-passwall-packages 是 monorepo，
-#   里面 xray-core / sing-box / hysteria / naiveproxy / shadowsocks-rust …
-#   全部与 feeds 同名，整仓拷进来就是两份同名包。依赖一律用 feeds 的。
+# 源已从 xiaorouji 迁到 Openwrt-Passwall（旧地址 404）。
+# ⚠ 只拷 luci-app-passwall 子目录：同仓的 xray-core/sing-box 等全与 feeds 同名。
 if [ "$ADD_PASSWALL" = "true" ]; then
   PW_TMP="$(mktemp -d)/pw"
   if clone https://github.com/Openwrt-Passwall/openwrt-passwall "$PW_TMP" main \
@@ -304,8 +255,7 @@ if [ "$ADD_OPENCLASH" = "true" ]; then
   rm -rf "$PKG_DIR/OpenClash"
 fi
 # --- mosdns ---
-# ⚠ 只拷 luci-app-mosdns 子目录：仓库里还带 mosdns 本体与 v2ray-geodata，
-#   两个都与 feeds 同名。本体用 feeds 的。
+# ⚠ 只拷 luci-app-mosdns：仓库还带 mosdns 本体与 v2ray-geodata，均与 feeds 同名。
 if [ "$ADD_MOSDNS" = "true" ]; then
   MD_TMP="$(mktemp -d)/mosdns"
   if clone https://github.com/sbwml/luci-app-mosdns "$MD_TMP" v5 \
@@ -404,14 +354,13 @@ if [ "$ADD_OAF" = "true" ]; then
   rm -rf "$PKG_DIR/OpenAppFilter"
 fi
 # ---------------------------------------------------------
-# 校验：默认开启的三个插件必须拉到，否则 defconfig 会静默剔除，
-#       编出来的固件缺少状态页还不易察觉
+# 校验：开关为 true 的包必须拉到，否则 defconfig 会静默剔除
 # ---------------------------------------------------------
 if [ "$ADD_AIROHA_NPU" = "true" ] && [ ! -d "$PKG_DIR/luci-app-airoha-npu" ]; then
   echo "::error::luci-app-airoha-npu 未拉到，config 里的 =y 会被 defconfig 剔除"
   exit 1
 fi
-# natmode / pon-status / igmpproxy 来自 qwe3017/luci-app（config 里也是 =y）
+# natmode / pon-status / igmpproxy 来自 qwe-qaq/luci-app（config 里也是 =y）
 for p in luci-app-natmode luci-app-pon-status luci-app-igmpproxy; do
   if [ "$ADD_LUCI_APP" = "true" ] && [ ! -d "$PKG_DIR/$p" ]; then
     echo "::error::$p 未拉到，config 里的 =y 会被 defconfig 剔除"
@@ -419,14 +368,12 @@ for p in luci-app-natmode luci-app-pon-status luci-app-igmpproxy; do
   fi
 done
 # ---------------------------------------------------------
-# 补回 libffi —— python3(3.14) 的 _ctypes 硬性需要
-#   CPython 自 3.11 起删掉了 --with-system-ffi，_ctypes 永远 #include <ffi.h>；
-#   而 ponwrt 与 immortalwrt/packages 的 libffi 目录都已不存在，整棵树里没有
-#   ffi.h / libffi.pc，于是编到 _ctypes.c 才炸：
-#     ./Modules/_ctypes/_ctypes.c:119:10: fatal error: ffi.h: No such file...
-#   处理：从 immortalwrt 基座取现成的包定义（自带 Build/InstallDev，会把
-#   ffi.h / libffi.pc 装进 staging_dir），再给 python3 补一条构建依赖。
-# ⚠ 必须放在 prepare-tmpinfo 之前：目录要被扫进索引，PKG_BUILD_DEPENDS 也要生效。
+# 补回 libffi —— python3 的 _ctypes 硬性需要 ffi.h
+# CPython 3.11 起删了 --with-system-ffi，_ctypes 永远 #include <ffi.h>，而
+# ponwrt 与 immortalwrt/packages 的 libffi 目录都已不存在，编到 _ctypes.c 才报
+# "ffi.h: No such file"。这里从 immortalwrt 基座取现成包定义（自带 InstallDev，
+# 会把 ffi.h / libffi.pc 装进 staging_dir），再给 python3 补构建依赖。
+# ⚠ 必须放在 prepare-tmpinfo 之前，目录才能被扫进索引、PKG_BUILD_DEPENDS 才生效。
 # ---------------------------------------------------------
 FFI_DIR="package/custom/libffi"
 if [ ! -d "$FFI_DIR" ]; then
@@ -452,21 +399,13 @@ if [ -f "$PY3MK" ] && ! grep -q 'PKG_BUILD_DEPENDS:=bluez libffi' "$PY3MK"; then
 fi
 
 # ---------------------------------------------------------
-# 清理重复嵌套目录
-# rchen14b/luci-app-airoha-npu 这个仓库有问题：包在根目录放了一份，
-# 又在同名子目录 luci-app-airoha-npu/ 里放了完整一份（含 Makefile）。
-# feeds 扫描会把两层都当成独立包，内层 dump 失败（报
-# "feeds/custom/luci-app-airoha-npu/luci-app-airoha-npu"）会中断整个
-# custom feed 的索引，导致 package/feeds/custom 压根不生成，
-# 所有包符号都不存在。
+# 清理重复嵌套目录：根目录一份 + 同名子目录又一份时，feeds 会把两层都当独立包，
+# 内层 dump 失败会中断整个 custom feed 的索引，导致所有包符号都不存在。
 # ---------------------------------------------------------
 echo "--- 检查重复嵌套目录 ---"
-# ⚠ 判据必须包含「根目录也有 Makefile」，否则会误删 monorepo 的真包：
-#   lucky / openlist2 / easytier / taskplan / poweroffdevice 的仓库根目录【没有】
-#   Makefile，同名子目录才是唯一的那份包 —— 只看「有同名子目录」就会把它们
-#   当重复项删掉，包从索引里消失、config 的 =y 被 defconfig 静默剔除。
-#   只有 rchen14b/luci-app-airoha-npu 那种「根目录一份 + 同名子目录又一份」
-#   才是要清理的坏结构（内层 dump 失败会中断整个 custom feed 的索引）。
+# ⚠ 判据必须含「根目录也有 Makefile」：lucky / openlist2 / easytier / taskplan /
+#   poweroffdevice 的根目录没有 Makefile，同名子目录才是唯一那份包，只看
+#   「有同名子目录」会把真包删掉。
 for d in "$PKG_DIR"/*; do
   [ -d "$d" ] || continue
   n=$(basename "$d")
@@ -477,25 +416,16 @@ for d in "$PKG_DIR"/*; do
 done
 # ---------------------------------------------------------
 # 让新包进入索引
-#   ⚠ 判据是 tmp/.packageinfo，不是 package/feeds/custom
-#   prepare-tmpinfo 直接扫 package/ 树（scan.mk: find -L package -maxdepth 5），
-#   package/custom/<pkg>/Makefile 深度 3，本来就会被扫到，**不需要注册 feed**。
-#   旧的 src-link custom feed 有两个坑：① 同一批 Makefile 被扫两遍，按 Override
-#   挑一个、行为随扫描顺序漂移；② install_src() 看到 $installed 非空直接 return，
-#   压根不建 package/feeds/custom/<pkg> —— 所以它不存在是正常的，拿它当判据必然误报。
+# ⚠ 判据是 tmp/.packageinfo，不是 package/feeds/custom。
+# prepare-tmpinfo 直接扫 package/ 树（scan.mk: find -L package -maxdepth 5），
+# custom/<pkg>/Makefile 深度 3 本来就会被扫到，不需要注册 feed；旧 src-link
+# custom feed 反而会让同一批 Makefile 被扫两遍、行为随扫描顺序漂移。
 # ---------------------------------------------------------
 if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
-  # =========================================================
-  # 强制重建索引
-  #   只删 tmp/.packageinfo 是不够的：prepare-tmpinfo 有 scan_unchanged
-  #   优化（拿 tmp/info/.scan-*.stamp 比 mtime），stamp 还在且没有更新的
-  #   Makefile 时它会跳过扫描 —— 结果 .packageinfo 被删了却没人重建，
-  #   索引反而空了。所以 stamp 和 scan.mk 的 .files* 清单缓存都要一起删。
-  #   actions/cache 恢复的 tmp/ 会保留旧时间戳，而 cp -a 又保留源 mtime：
-  #   新拷进来的 Makefile 可能比重建的 stamp 还旧，scan_unchanged 会判
-  #   「无变化」直接跳过 —— 表现就是「包拷好了、别的包都 ✅、唯独它缺席」。
-  #   所以删完缓存再统一刷新 package/custom 下所有文件的时间戳。
-  # =========================================================
+  # 强制重建索引：只删 tmp/.packageinfo 不够，scan_unchanged 会拿
+  # tmp/info/.scan-*.stamp 比 mtime 跳过扫描，故 stamp 与 .files* 清单一起删。
+  # cache 恢复的 tmp/ 与 cp -a 都保留旧 mtime，新 Makefile 可能比 stamp 还旧，
+  # 故删完再统一 touch 一遍 package/custom（否则表现为「别的包都 ✅ 唯独它缺席」）。
   rm -f tmp/.packageinfo tmp/.targetinfo
   rm -f tmp/info/.scan-packageinfo.stamp tmp/info/.scan-targetinfo.stamp
   rm -f tmp/info/.files* 2>/dev/null
@@ -512,9 +442,8 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   echo "=========================================="
   echo "package/custom 内容："
   INDEX_MISS=""
-  # 目录名 ≠ 包名的情况（Makefile 里显式写了 PKG_NAME / KernelPackage）：
-  #   open-app-filter 的包是 appfilter、oaf 的 KernelPackage 是 kmod-oaf，
-  #   按目录名去索引里查必然查不到 —— 那是误报，不是索引失败。
+  # 目录名 ≠ 包名（Makefile 显式写了 PKG_NAME / KernelPackage）：
+  # open-app-filter→appfilter、oaf→kmod-oaf，按目录名查必然查不到，属误报。
   pkgname_of() {
     case "$1" in
       open-app-filter) echo "appfilter" ;;
@@ -582,9 +511,7 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status luci-app-igmpproxy"
   fi
 
-  # 与 configs/an7581.config / an7583.config 里 =y 的包一一对应。
-  # 任一项没进索引，defconfig 都会把那个 =y 静默剔除 —— 编出来的固件少了菜单
-  # 还不易察觉。所以这里和 config 必须同步改。
+  # 与 configs/*.config 里 =y 的包一一对应；没进索引的会被 defconfig 静默剔除。
   [ "$ADD_FLUENT"    = "true" ] && REQUIRED="$REQUIRED luci-theme-fluent"
   [ "$ADD_OPENCLASH" = "true" ] && REQUIRED="$REQUIRED luci-app-openclash"
   [ "$ADD_PASSWALL"  = "true" ] && REQUIRED="$REQUIRED luci-app-passwall"
@@ -614,14 +541,9 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     if [ "$ADD_FTTR_LUCI" = "true" ]; then
       REQUIRED="$REQUIRED luci-app-fttr"
     fi
-    # =========================================================
-    # luci-app-fttr 依赖 +openwrt-fttr，后者依赖 +kmod-h3c-fmcs。
-    # 链条上任一节不在树里，defconfig 都会静默把整条 FTTR 剔掉 —— 与其编出
-    # 一个没有 FTTR 界面的固件还不易察觉，不如在这里直接报错。
-    # 前者最常见原因是缺 rust-package.mk；后者受 @(TARGET_airoha_an7581) 限制。
-    # 界面包来自 LazuliKao/luci-app-fttr 的 package 分支，前端 JS 已随包
-    # 提交，编译不联网；后端三件套仍由私有 feed 提供。
-    # =========================================================
+    # luci-app-fttr → openwrt-fttr → kmod-h3c-fmcs，链条上任一节缺失，
+    # defconfig 都会静默剔掉整条 FTTR。前者多为缺 rust-package.mk，
+    # 后者受 @(TARGET_airoha_an7581) 限制。
     if [ "$ADD_FTTR_TOOLS" = "true" ] &&
        ! grep -qx "Package: openwrt-fttr" tmp/.packageinfo 2>/dev/null; then
       echo "::error::openwrt-fttr 不在包索引里（luci-app-fttr 的后端，Rust 包）"
