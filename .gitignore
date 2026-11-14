@@ -1,0 +1,7 @@
+# 排查 CI 时下载的 API 响应 / 页面 HTML / 临时脚本，别被 git add -A 带进仓库
+/_*
+/build-logs/
+*.zip
+*.log
+*.pyc
+__pycache__/
