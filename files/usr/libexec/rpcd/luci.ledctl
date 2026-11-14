@@ -87,6 +87,11 @@ set_led() {
 	delay_on=$(printf '%s' "$input" | jsonfilter -e '@.delay_on' 2>/dev/null)
 	delay_off=$(printf '%s' "$input" | jsonfilter -e '@.delay_off' 2>/dev/null)
 
+	# jsonfilter 对 null 会打印字符串 "null"，非数字一律当作没传
+	case "$brightness" in ''|*[!0-9]*) brightness= ;; esac
+	case "$delay_on"   in ''|*[!0-9]*) delay_on= ;; esac
+	case "$delay_off"  in ''|*[!0-9]*) delay_off= ;; esac
+
 	# 给了亮度就先摘掉触发器，否则会被触发器立刻覆盖
 	if [ -n "$brightness" ]; then
 		echo none > "$path/trigger" 2>/dev/null

@@ -21,17 +21,20 @@ var callStatus = rpc.declare({
 	expect: { leds: [] }
 });
 
-/* 不声明 params：传一个对象过去，后端用 jsonfilter 取字段 */
+/*
+ * params 必须声明成对象字面量：LuCI 的 declare 只在 params 是数组或对象时
+ * 才把调用参数打包成命名对象，缺省时发出去的是空对象 {}，后端什么也收不到。
+ */
 var callSet = rpc.declare({
 	object: 'luci.ledctl',
 	method: 'set',
-	expect: { }
+	params: { led: 'str', trigger: 'str', brightness: 'int', delay_on: 'int', delay_off: 'int' }
 });
 
 var callAll = rpc.declare({
 	object: 'luci.ledctl',
 	method: 'all',
-	expect: { }
+	params: { action: 'str' }
 });
 
 function notify(kind, msg) {
