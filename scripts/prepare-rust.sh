@@ -82,8 +82,22 @@ if [ -n "$BOARD" ]; then
   fi
 fi
 
-LIBC=gnu
+# OpenWrt 默认 musl。本步骤跑在 defconfig 之前，种子 .config 里通常还没有
+# CONFIG_USE_MUSL（那是 defconfig 才展开出来的）；原来默认 gnu，于是装了 gnu
+# 的 std，而真实 cargo 用 aarch64-unknown-linux-musl → E0463（run #294）。
+LIBC=musl
+grep -q '^CONFIG_USE_GLIBC=y' .config 2>/dev/null && LIBC=gnu
+grep -q '^CONFIG_USE_UCLIBC=y' .config 2>/dev/null && LIBC=uclibc
 grep -q '^CONFIG_USE_MUSL=y' .config 2>/dev/null && LIBC=musl
+# 缓存恢复出来的 target-* 目录名是 OpenWrt 上一轮实际用的 libc，优先级最高
+for d in "$PWD"/staging_dir/target-* "$PWD"/build_dir/target-*; do
+  case "$d" in
+    *_musl)        LIBC=musl ;;
+    *_glibc|*_gnu) LIBC=gnu ;;
+    *_uclibc)      LIBC=uclibc ;;
+  esac
+done
+log "libc 判定: $LIBC"
 
 RUST_TARGET=""
 if [ -n "$BOARD" ]; then
@@ -99,6 +113,7 @@ MAKE
 )
   RUST_TARGET=$(printf '%s' "$RUST_TARGET" | tr -d '\r' | head -1)
 fi
+RUST_TARGET_RAW="$RUST_TARGET"
 
 # 部分树 TARGET_SUFFIX 为空，算出来停在 <arch>-unknown-linux，补上 libc 段
 case "$RUST_TARGET" in
@@ -121,7 +136,20 @@ fi
 if [ -z "$RUST_TARGET" ]; then
   bail "Rust: 拿不到 target triple（BOARD='$BOARD' SUBTARGET='$SUBTARGET'），退回源码自举"
 fi
-log "Rust target: $RUST_TARGET"
+log "Rust target: $RUST_TARGET（make 原始值: ${RUST_TARGET_RAW:-空}）"
+
+# 探测上下文（defconfig 前、种子 .config）与真实构建上下文可能算出不同 libc。
+# 两个都装：多 20 MB / 几秒，换来「cargo 用哪个都有 std」。
+ARCH_PART=$(printf '%s' "$RUST_TARGET" | cut -d- -f1)
+RUST_TARGETS="$RUST_TARGET"
+for lc in musl gnu; do
+  t="${ARCH_PART}-unknown-linux-${lc}"
+  case " $RUST_TARGETS " in
+    *" $t "*) ;;
+    *) RUST_TARGETS="$RUST_TARGETS $t" ;;
+  esac
+done
+log "Rust targets（主 + 兜底）: $RUST_TARGETS"
 
 # ---------------------------------------------------------------
 # 2. 找 rustup（runner 预装，但 PATH 未必包含 ~/.cargo/bin）
@@ -144,9 +172,13 @@ log "Rust toolchain: $RUST_TOOLCHAIN"
 # ---------------------------------------------------------------
 # 3. 装对应的 target
 # ---------------------------------------------------------------
-if ! rustup target add --toolchain "$RUST_TOOLCHAIN" "$RUST_TARGET" 2>&1 | tee -a "$REPORT"; then
-  bail "Rust: rustup target add $RUST_TARGET 失败，退回源码自举"
-fi
+for t in $RUST_TARGETS; do
+  if rustup target add --toolchain "$RUST_TOOLCHAIN" "$t" >>"$REPORT" 2>&1; then
+    log "已安装 std: $t"
+  else
+    warn "Rust: rustup target add $t 失败（主 target 由下面的 std 检查兜住）"
+  fi
+done
 
 RUST_ROOT=$(rustup run "$RUST_TOOLCHAIN" rustc --print sysroot 2>/dev/null)
 if [ -z "$RUST_ROOT" ] || [ ! -d "$RUST_ROOT" ]; then
@@ -186,7 +218,9 @@ if [ "${RUST_PIN_FEED:-0}" = "1" ]; then
       rustup toolchain install "$FEED_VER" --profile minimal >>"$REPORT" 2>&1 || true
     fi
     # 无论是不是刚装的，都要确认这个 toolchain 上有目标平台的 std
-    rustup target add --toolchain "$FEED_VER" "$RUST_TARGET" >>"$REPORT" 2>&1 || true
+    for t in $RUST_TARGETS; do
+      rustup target add --toolchain "$FEED_VER" "$t" >>"$REPORT" 2>&1 || true
+    done
     PIN_ROOT=$(rustup run "$FEED_VER" rustc --print sysroot 2>/dev/null || true)
     if [ -n "$PIN_ROOT" ] && [ -d "$PIN_ROOT/lib/rustlib/$RUST_TARGET/lib" ] \
        && [ -x "$PIN_ROOT/bin/rustc" ]; then
@@ -223,12 +257,20 @@ log "其 sysroot: ${SYSROOT:-未知}"
 # 冒烟：--emit=metadata 不链接，2 秒就能证伪 —— 缺 std 在这儿暴露，
 # 而不是等 45 分钟后在 airoha-ponctl 里报 E0463
 if printf 'pub fn ci_probe() {}\n' > "$REPORT_DIR/stdprobe.rs" 2>/dev/null; then
-  if "$EFF" --target "$RUST_TARGET" --crate-type lib --emit=metadata \
-       -o "$REPORT_DIR/stdprobe.rmeta" "$REPORT_DIR/stdprobe.rs" >>"$REPORT" 2>&1; then
-    log "✅ std 冒烟通过：$RUST_TARGET 可编译"
-  else
-    bail "Rust: $RUST_TARGET 冒烟失败（$SYSROOT 里没有可用的 std），退回源码自举"
-  fi
+  SMOKE_OK=0
+  for t in $RUST_TARGETS; do
+    [ -d "$RUST_ROOT/lib/rustlib/$t/lib" ] || continue
+    if "$EFF" --target "$t" --crate-type lib --emit=metadata \
+         -o "$REPORT_DIR/stdprobe.rmeta" "$REPORT_DIR/stdprobe.rs" >>"$REPORT" 2>&1; then
+      log "✅ std 冒烟通过：$t 可编译"
+      [ "$t" = "$RUST_TARGET" ] && SMOKE_OK=1
+    elif [ "$t" = "$RUST_TARGET" ]; then
+      bail "Rust: 主 target $t 冒烟失败（$SYSROOT 里没有可用的 std），退回源码自举"
+    else
+      warn "Rust: 兜底 target $t 冒烟失败（不影响主 target）"
+    fi
+  done
+  [ "$SMOKE_OK" = 1 ] || bail "Rust: 主 target $RUST_TARGET 没通过冒烟，退回源码自举"
 fi
 
 # ---------------------------------------------------------------
