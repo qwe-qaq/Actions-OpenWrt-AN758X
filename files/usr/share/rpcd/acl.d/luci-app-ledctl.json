@@ -1,0 +1,15 @@
+{
+	"luci-app-ledctl": {
+		"description": "Grant access to panel LED control (PCA9555)",
+		"read": {
+			"ubus": {
+				"luci.ledctl": [ "status" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"luci.ledctl": [ "set", "all" ]
+			}
+		}
+	}
+}
