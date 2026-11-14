@@ -1271,6 +1271,13 @@ jobs:
               tail -60 "$GITHUB_WORKSPACE/build-logs/install.log" | tr -d '\r'
               echo '```'
             fi
+            if [ -f "$GITHUB_WORKSPACE/build-logs/rust-toolchain.txt" ]; then
+              echo ""
+              echo "### Rust 工具链（prepare-rust 报告）"
+              echo '```text'
+              tail -40 "$GITHUB_WORKSPACE/build-logs/rust-toolchain.txt" | tr -d '\r'
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       # 失败时带回日志：网页日志会截断，落成 artifact 才能 grep

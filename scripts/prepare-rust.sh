@@ -22,6 +22,25 @@ REPORT="$REPORT_DIR/rust-toolchain.txt"
 log() { echo "$1" | tee -a "$REPORT"; }
 warn() { echo "::warning::$1"; echo "跳过: $1" >> "$REPORT"; }
 
+# 「退回源码自举」必须真的让 OpenWrt 重编 rust：缓存恢复的 staging_dir 常带着
+# 上一轮的 .rust_installed 戳，只打一行 warning 什么都不做的话，package/compile
+# 认为 rust 已就绪、0.03 秒跳过 —— 于是拿着一个没有目标 std 的旧 rustc 去编
+# Rust 包，报 error[E0463]: can't find crate for `std`（run #292 就是这么挂的）。
+clear_rust_stamps() {
+  for d in "$PWD"/staging_dir/host/stamp "$PWD"/staging_dir/hostpkg/stamp; do
+    [ -d "$d" ] && rm -f "$d"/.rust_* 2>/dev/null
+  done
+  return 0
+}
+# 报告落到 build-logs（成功/退回复源都做）：失败时随 artifact 上传，
+# 下次不用再猜「到底用的哪个 rustc、有没有目标 std」。
+save_report() {
+  local d="${GITHUB_WORKSPACE:-$PWD}/build-logs"
+  mkdir -p "$d" 2>/dev/null && cp -f "$REPORT" "$d/rust-toolchain.txt" 2>/dev/null
+  return 0
+}
+bail() { warn "$1"; clear_rust_stamps; save_report; exit 0; }
+
 : > "$REPORT"
 log "===== Rust 预编译工具链 ====="
 
@@ -35,8 +54,7 @@ if [ ! -f "$RUST_FEED/Makefile" ]; then
 fi
 
 if [ ! -f "$RUST_FEED/rust-values.mk" ]; then
-  warn "Rust: 缺 rust-values.mk（拿不到 RUSTC_TARGET_ARCH），退回源码自举"
-  exit 0
+  bail "Rust: 缺 rust-values.mk（拿不到 RUSTC_TARGET_ARCH），退回源码自举"
 fi
 
 # ---------------------------------------------------------------
@@ -101,8 +119,7 @@ if ! printf '%s' "$RUST_TARGET" | grep -qE '^[a-z0-9_]+-[a-z0-9_]+-linux-[a-z]+$
 fi
 
 if [ -z "$RUST_TARGET" ]; then
-  warn "Rust: 拿不到 target triple（BOARD='$BOARD' SUBTARGET='$SUBTARGET'），退回源码自举"
-  exit 0
+  bail "Rust: 拿不到 target triple（BOARD='$BOARD' SUBTARGET='$SUBTARGET'），退回源码自举"
 fi
 log "Rust target: $RUST_TARGET"
 
@@ -116,8 +133,7 @@ if [ -z "$RUSTUP_BIN" ]; then
   done
 fi
 if [ -z "$RUSTUP_BIN" ]; then
-  warn "Rust: runner 没有 rustup（需 apt 安装 rustup），退回源码自举"
-  exit 0
+  bail "Rust: runner 没有 rustup（需 apt 安装 rustup），退回源码自举"
 fi
 PATH="$(dirname "$RUSTUP_BIN"):$PATH"; export PATH
 
@@ -129,14 +145,12 @@ log "Rust toolchain: $RUST_TOOLCHAIN"
 # 3. 装对应的 target
 # ---------------------------------------------------------------
 if ! rustup target add --toolchain "$RUST_TOOLCHAIN" "$RUST_TARGET" 2>&1 | tee -a "$REPORT"; then
-  warn "Rust: rustup target add $RUST_TARGET 失败，退回源码自举"
-  exit 0
+  bail "Rust: rustup target add $RUST_TARGET 失败，退回源码自举"
 fi
 
 RUST_ROOT=$(rustup run "$RUST_TOOLCHAIN" rustc --print sysroot 2>/dev/null)
 if [ -z "$RUST_ROOT" ] || [ ! -d "$RUST_ROOT" ]; then
-  warn "Rust: rustc --print sysroot 失败，退回源码自举"
-  exit 0
+  bail "Rust: rustc --print sysroot 失败，退回源码自举"
 fi
 
 # ---------------------------------------------------------------
@@ -144,13 +158,11 @@ fi
 #    否则后面编译会因为缺 std 而失败，不如现在就退回
 # ---------------------------------------------------------------
 if [ ! -d "$RUST_ROOT/lib/rustlib/$RUST_TARGET/lib" ]; then
-  warn "Rust: 缺 $RUST_TARGET 的 std（$RUST_ROOT/lib/rustlib/$RUST_TARGET/lib），退回源码自举"
-  exit 0
+  bail "Rust: 缺 $RUST_TARGET 的 std（$RUST_ROOT/lib/rustlib/$RUST_TARGET/lib），退回源码自举"
 fi
 for t in cargo rustc rustdoc; do
   if [ ! -x "$RUST_ROOT/bin/$t" ]; then
-    warn "Rust: 缺 $RUST_ROOT/bin/$t，退回源码自举"
-    exit 0
+    bail "Rust: 缺 $RUST_ROOT/bin/$t，退回源码自举"
   fi
 done
 
@@ -188,24 +200,35 @@ if [ "${RUST_PIN_FEED:-0}" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------
-# 4.5 纠正 staging_dir 里那三个「指向上次 runner」的符号链接
-#   缓存命中时 host/bin/rustc 是上次留下的链接，指向 /home/runner/.rustup/…。
-#   镜像换了 rustup 布局或工具链名，它就悬空；而 Host/Install 只在 stamp 失效
-#   时重跑、不会自己修，于是报 /bin/sh: .../staging_dir/host/bin/rustc: not found，
-#   看起来像缓存坏了。这里就地改正，只动符号链接、不碰真实二进制。
+# 4.5 把 staging_dir 里那三个 rust 入口无条件改指向刚验证过的 toolchain
+#   缓存命中时 host/bin/rustc 是上次构建留下的东西：可能是指向别的 toolchain
+#   的符号链接，也可能是自举出来的真二进制（sysroot = staging_dir/host，里面
+#   没有目标 std）。两种情况都会让 Rust 包报 E0463。Host/Install 只在 stamp
+#   失效时才重跑、不会自己修，所以这里直接改写，并把 .rust_installed 清掉让
+#   OpenWrt 也认这个新链接。
 # ---------------------------------------------------------------
-LINKED=0
-for d in "$PWD/staging_dir/host/bin" "$PWD/staging_dir/hostpkg/bin"; do
-  [ -d "$d" ] || continue
-  for t in cargo rustc rustdoc; do
-    if [ -L "$d/$t" ]; then
-      ln -sfn "$RUST_ROOT/bin/$t" "$d/$t"
-      LINKED=$((LINKED + 1))
-    fi
-  done
+HOSTBIN="$PWD/staging_dir/host/bin"
+mkdir -p "$HOSTBIN"
+for t in cargo rustc rustdoc; do
+  ln -sfn "$RUST_ROOT/bin/$t" "$HOSTBIN/$t"
 done
-if [ "$LINKED" -gt 0 ]; then
-  log "已纠正 $LINKED 个 staging_dir 里的 rust 符号链接（缓存恢复的残留）"
+# 戳不清掉，Host/Install 不重跑，链接就还是缓存里那个（指向上一个 toolchain）
+rm -f "$PWD"/staging_dir/host/stamp/.rust_installed "$PWD"/staging_dir/hostpkg/stamp/.rust_installed 2>/dev/null
+
+EFF="$HOSTBIN/rustc"
+SYSROOT=$("$EFF" --print sysroot 2>/dev/null || true)
+log "实际使用的 rustc: $("$EFF" --version 2>&1 | head -1)"
+log "其 sysroot: ${SYSROOT:-未知}"
+
+# 冒烟：--emit=metadata 不链接，2 秒就能证伪 —— 缺 std 在这儿暴露，
+# 而不是等 45 分钟后在 airoha-ponctl 里报 E0463
+if printf 'pub fn ci_probe() {}\n' > "$REPORT_DIR/stdprobe.rs" 2>/dev/null; then
+  if "$EFF" --target "$RUST_TARGET" --crate-type lib --emit=metadata \
+       -o "$REPORT_DIR/stdprobe.rmeta" "$REPORT_DIR/stdprobe.rs" >>"$REPORT" 2>&1; then
+    log "✅ std 冒烟通过：$RUST_TARGET 可编译"
+  else
+    bail "Rust: $RUST_TARGET 冒烟失败（$SYSROOT 里没有可用的 std），退回源码自举"
+  fi
 fi
 
 # ---------------------------------------------------------------
@@ -253,8 +276,7 @@ perl -i -pe '
 ' "$RUST_MAKEFILE"
 
 if ! grep -Fxq "$MARKER" "$RUST_MAKEFILE"; then
-  warn "Rust: 注入 ci-prebuilt.mk 失败，退回源码自举"
-  exit 0
+  bail "Rust: 注入 ci-prebuilt.mk 失败，退回源码自举"
 fi
 # ⚠ 别把 $HOSTBUILD 直接放进带 $(...) 的字符串：
 #   它的内容是字面量 $(eval $(call HostBuild))，
@@ -265,4 +287,6 @@ log "注入: $MARKER（在 HostBuild 求值之前）"
 "$RUST_ROOT/bin/rustc" --version | tee -a "$REPORT"
 log "✅ 使用 runner 的 Rust（$RUST_TOOLCHAIN），跳过源码自举（省 30~60 分钟）"
 sha256sum "$RUST_MAKEFILE" >> "$REPORT"
+
+save_report
 exit 0
