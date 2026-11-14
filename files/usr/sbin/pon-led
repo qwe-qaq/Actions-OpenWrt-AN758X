@@ -1,0 +1,90 @@
+#!/bin/sh
+# pon-led —— 按原厂语义驱动面板 PON 指示灯（FiberHome AN4475-G2）
+#
+#   光信号灯 red:los (P0.1)        无光 → 1Hz 闪烁；有光 → 灭
+#   光纤灯   green:wan-online(P0.0) 有光未注册 → 1Hz 闪烁；O5 → 常亮
+#
+# 不用内核的 pon0-los / pon0-online 触发器：本板 airoha-xpon 的
+# signal_detected 恒为 1（BOSA SD 位虚高），拔纤后 rx_power 已 -40 dBm
+# 而 pon0-los 仍不置位，红灯永远不亮。这里改用收光功率 + 时钟锁定判断。
+#
+# 闪烁交给内核 ledtrig-timer（delay_on/off=500ms），本脚本只做 1s 轮询，
+# 因为设备 busybox 不支持小数 sleep，纯 shell 闪不出 1Hz。
+#
+# 可调：PON_LED_DEVICE=pon0  PON_LED_LIGHT_MIN=35（收光门限，dBm 的绝对值）
+
+DEV=${PON_LED_DEVICE:-pon0}
+LOS=/sys/class/leds/red:los
+WAN=/sys/class/leds/green:wan-online
+LIGHT_MIN=${PON_LED_LIGHT_MIN:-35}
+BLINK_MS=${PON_LED_BLINK_MS:-500}
+
+los_state=""
+wan_state=""
+
+apply() {
+	local led="$1" want="$2" cur="$3"
+	[ -w "$led/brightness" ] || return 0
+	[ "$want" = "$cur" ] && return 0
+
+	case "$want" in
+	on)
+		echo none > "$led/trigger" 2>/dev/null
+		echo 1 > "$led/brightness" 2>/dev/null
+		;;
+	off)
+		echo none > "$led/trigger" 2>/dev/null
+		echo 0 > "$led/brightness" 2>/dev/null
+		;;
+	blink)
+		echo timer > "$led/trigger" 2>/dev/null
+		echo "$BLINK_MS" > "$led/delay_on" 2>/dev/null
+		echo "$BLINK_MS" > "$led/delay_off" 2>/dev/null
+		;;
+	esac
+}
+
+field() {
+	printf '%s\n' "$1" | sed -n "s/^$2:[[:space:]]*//p" | head -n1
+}
+
+poll() {
+	local st rx syn onu light=0
+
+	if ! st=$(ponctl --device "$DEV" status 2>/dev/null); then
+		apply "$LOS" off "$los_state"; los_state=off
+		apply "$WAN" off "$wan_state"; wan_state=off
+		return 0
+	fi
+
+	rx=$(field "$st" rx_power_dbm)
+	syn=$(field "$st" xgtc_sync)
+	onu=$(field "$st" onu_state)
+
+	# 无光纤时验证逻辑用：PON_LED_FORCE=o5|light|dark
+	case "${PON_LED_FORCE:-}" in
+	o5)    onu=O5; rx=-20 ;;
+	light) onu=O2; rx=-20 ;;
+	dark)  onu=O1; rx=-40 ;;
+	esac
+
+	# 有光判据：收光高于门限，或时钟已锁（无光不可能锁上）
+	awk -v v="${rx:--99}" -v m="$LIGHT_MIN" 'BEGIN{exit !(v+m > 0.5)}' && light=1
+	[ "$syn" = "locked" ] && light=1
+
+	if [ "$onu" = "O5" ]; then
+		apply "$LOS" off "$los_state";   los_state=off
+		apply "$WAN" on  "$wan_state";   wan_state=on
+	elif [ "$light" = 1 ]; then
+		apply "$LOS" off "$los_state";   los_state=off
+		apply "$WAN" blink "$wan_state"; wan_state=blink
+	else
+		apply "$LOS" blink "$los_state"; los_state=blink
+		apply "$WAN" off "$wan_state";   wan_state=off
+	fi
+}
+
+while :; do
+	poll
+	sleep 1
+done

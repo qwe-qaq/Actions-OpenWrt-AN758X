@@ -1,0 +1,4 @@
+#!/bin/sh
+# 首启启用面板 PON 指示灯守护
+/etc/init.d/pon-led enable
+exit 0
