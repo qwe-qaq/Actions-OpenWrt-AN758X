@@ -1346,8 +1346,8 @@ jobs:
           echo "FIRMWARE=$PWD" >> "$GITHUB_ENV"
           echo "status=success" >> "$GITHUB_OUTPUT"
 
-      # 固件文件名追加构建时间：<名>-2026-11-13_133226(Shanghai).itb。
-      # 冒号会让 upload-artifact 整包失败；改名后 sha256sums 一并重算。
+      # 只给主固件加时间戳：<名>-2026-11-13_133226(Shanghai).itb。
+      # 冒号会让 upload-artifact 整包失败；其余产物保持原名，刷机脚本/文档引用的名字不用动。
       - name: Stamp firmware filenames with build time
         id: stamp
         if: steps.organize.outputs.status == 'success' && env.FW_TS_NAME == 'true'
@@ -1363,44 +1363,70 @@ jobs:
           echo "FW_TS=${TS}" >> "$GITHUB_ENV"
           echo "本次文件名时间戳: ${TS}"
 
-          # 双后缀（.img.gz / .tar.gz）不能被 ${f##*.} 拆散
-          get_ext() {
-            case "$1" in
-              *.img.gz) echo ".img.gz" ;;
-              *.tar.gz) echo ".tar.gz" ;;
-              *.*)      echo ".${1##*.}" ;;
-              *)        echo "" ;;
-            esac
-          }
-
-          renamed=0
-          already=0
-          for f in *; do
+          # 只动 sysupgrade 的 .itb；factory.bin / ubi / manifest 一律原名
+          ONLY_OLD=""; ONLY_NEW=""; already=0
+          for f in *-squashfs-sysupgrade*.itb; do
             [ -f "$f" ] || continue
-            # 描述/校验类文件保持原名：sha256sums、profiles.json（owut/ASU 按原名找）、buildinfo
+            # 幂等护栏：已经带时间戳的直接跳过，别叠加成 -TS-TS
             case "$f" in
-              sha256sums*|profiles.json|*.buildinfo|*.ipk|*.apk) continue ;;
-              # 幂等护栏：万一这一步被执行两次，别叠加成
-              # -2026-11-13_133226(Shanghai)-2026-11-13_133300(Shanghai)
               *-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]*) already=$((already + 1)); continue ;;
             esac
-            ext=$(get_ext "$f")
-            base=${f%"$ext"}
-            mv -f -- "$f" "${base}-${TS}${ext}"
-            echo "  $f  ->  ${base}-${TS}${ext}"
-            renamed=$((renamed + 1))
+            NEW="${f%.itb}-${TS}.itb"
+            if [ -e "$NEW" ]; then
+              echo "::warning::${NEW} 已存在，跳过改名"
+              continue
+            fi
+            mv -f -- "$f" "$NEW"
+            echo "  $f  ->  $NEW"
+            ONLY_OLD="$f"; ONLY_NEW="$NEW"
           done
 
-          # 改名后重算校验和（sha256sums 自己不能被算进去，先删）
-          rm -f sha256sums
-          sha256sum * > sha256sums 2>/dev/null || true
+          if [ -z "$ONLY_NEW" ]; then
+            if [ "$already" -gt 0 ]; then
+              echo "文件名已带时间戳（${already} 个），跳过改名"
+            else
+              echo "::warning::目录里没有 *-squashfs-sysupgrade.itb，本次不改任何文件名"
+              echo "目录内容: $(ls | tr '\n' ' ')"
+            fi
+          else
+            # profiles.json 里的文件名 + sha256 必须同步，否则 owut / ASU 指向旧名 404
+            if [ -f profiles.json ]; then
+              python3 - "$ONLY_OLD" "$ONLY_NEW" <<'PY' || echo "::warning::profiles.json 未更新，owut/ASU 可能取不到新固件"
+          import hashlib, json, sys
 
-          echo "已改名文件数: ${renamed}" >> "$GITHUB_STEP_SUMMARY"
-          echo "文件名时间戳: ${TS}" >> "$GITHUB_STEP_SUMMARY"
+          old, new = sys.argv[1], sys.argv[2]
+          sha = hashlib.sha256(open(new, 'rb').read()).hexdigest()
+          with open('profiles.json', encoding='utf-8') as fp:
+              data = json.load(fp)
 
-          if [ "$renamed" -eq 0 ] && [ "$already" -eq 0 ]; then
-            echo "::warning::固件目录里没有可改名的产物，Release 将使用原始文件名"
+
+          def walk(node):
+              if isinstance(node, dict):
+                  if node.get('name') == old:
+                      node['name'] = new
+                      if 'sha256' in node:
+                          node['sha256'] = sha
+                  for v in node.values():
+                      walk(v)
+              elif isinstance(node, list):
+                  for v in node:
+                      walk(v)
+
+
+          walk(data)
+          with open('profiles.json', 'w', encoding='utf-8') as fp:
+              json.dump(data, fp, ensure_ascii=False, indent=2)
+          PY
+            fi
+
+            # 校验和最后再算：profiles.json 刚改过，先算会自相矛盾
+            rm -f sha256sums
+            sha256sum * > sha256sums 2>/dev/null || true
+
+            echo "已改名: \`${ONLY_OLD}\` -> \`${ONLY_NEW}\`" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+          echo "文件名时间戳: ${TS}" >> "$GITHUB_STEP_SUMMARY"
           echo "status=success" >> "$GITHUB_OUTPUT"
 
       - name: Upload firmware directory
