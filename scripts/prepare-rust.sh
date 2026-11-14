@@ -41,17 +41,67 @@ fi
 
 # ---------------------------------------------------------------
 # 1. 向 feed 要 target triple
+#
+#   REAL_GNU_TARGET_NAME 依赖 ARCH，而 ARCH 不在 .config 里 —— 它由
+#   target/linux/<board>[/<subtarget>]/target.mk 赋值。只 include rules.mk 时
+#   ARCH 为空，算出来是 "-unknown-linux"，rustup 把开头的 '-' 当选项拆：
+#     error: unexpected argument '-u' found
+#   所以必须带 BOARD/SUBTARGET 让 target.mk 一起展开；万一还是拿不到，
+#   就从 target.mk 里直接读 ARCH 兜底（rust-values.mk 也是拿它拼的）。
 # ---------------------------------------------------------------
-RUST_TARGET=$(make --no-print-directory -s -f - TOPDIR="$PWD" ci-rust-target <<'MAKE' 2>/dev/null
+BOARD=""
+for b in $(sed -n 's/^CONFIG_TARGET_\([a-zA-Z0-9_]*\)=y$/\1/p' .config 2>/dev/null); do
+  [ -f "target/linux/$b/Makefile" ] && { BOARD="$b"; break; }
+done
+
+SUBTARGET=""
+if [ -n "$BOARD" ]; then
+  SUBTARGET=$(sed -n 's/^CONFIG_TARGET_SUBTARGET="\(.*\)"$/\1/p' .config 2>/dev/null | head -1)
+  if [ -z "$SUBTARGET" ]; then
+    for s in $(sed -n "s/^CONFIG_TARGET_${BOARD}_\([a-zA-Z0-9_]*\)=y$/\1/p" .config 2>/dev/null); do
+      [ -f "target/linux/$BOARD/$s/target.mk" ] && { SUBTARGET="$s"; break; }
+    done
+  fi
+fi
+
+LIBC=gnu
+grep -q '^CONFIG_USE_MUSL=y' .config 2>/dev/null && LIBC=musl
+
+RUST_TARGET=""
+if [ -n "$BOARD" ]; then
+  RUST_TARGET=$(make --no-print-directory -s -f - \
+    TOPDIR="$PWD" BOARD="$BOARD" SUBTARGET="$SUBTARGET" ci-rust-target 2>/dev/null <<'MAKE'
 include $(TOPDIR)/rules.mk
+include $(INCLUDE_DIR)/target.mk
 include $(TOPDIR)/feeds/packages/lang/rust/rust-values.mk
 .PHONY: ci-rust-target
 ci-rust-target:
 	@printf '%s\n' '$(RUSTC_TARGET_ARCH)'
 MAKE
 )
+  RUST_TARGET=$(printf '%s' "$RUST_TARGET" | tr -d '\r' | head -1)
+fi
+
+# 部分树 TARGET_SUFFIX 为空，算出来停在 <arch>-unknown-linux，补上 libc 段
+case "$RUST_TARGET" in
+  *-linux) RUST_TARGET="${RUST_TARGET}-${LIBC}" ;;
+esac
+
+if ! printf '%s' "$RUST_TARGET" | grep -qE '^[a-z0-9_]+-[a-z0-9_]+-linux-[a-z]+$'; then
+  ARCH_SRC="target/linux/$BOARD/$SUBTARGET/target.mk"
+  [ -f "$ARCH_SRC" ] || ARCH_SRC="target/linux/$BOARD/Makefile"
+  A=$(sed -n 's/^ARCH[[:space:]]*:*=[[:space:]]*\([a-zA-Z0-9_]*\).*/\1/p' "$ARCH_SRC" 2>/dev/null | tail -1)
+  case "$A" in
+    "")      RUST_TARGET="" ;;
+    riscv64) RUST_TARGET="riscv64gc-unknown-linux-${LIBC}" ;;
+    i386)    RUST_TARGET="i586-unknown-linux-${LIBC}" ;;
+    *)       RUST_TARGET="${A}-unknown-linux-${LIBC}" ;;
+  esac
+  [ -n "$RUST_TARGET" ] && log "Rust: make 没给出 triple，按 $ARCH_SRC 的 ARCH 推导: $RUST_TARGET"
+fi
+
 if [ -z "$RUST_TARGET" ]; then
-  warn "Rust: RUSTC_TARGET_ARCH 为空，退回源码自举"
+  warn "Rust: 拿不到 target triple（BOARD='$BOARD' SUBTARGET='$SUBTARGET'），退回源码自举"
   exit 0
 fi
 log "Rust target: $RUST_TARGET"

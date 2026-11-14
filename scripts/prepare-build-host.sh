@@ -47,10 +47,18 @@ set_cfg() { # $1=KEY  $2=值（空表示 is not set）
 #    runner 预装的 Go 作为 bootstrap，一步跳过全部自举。
 # ===============================================================
 GO_DONE=0
-GO_ROOT=$(go env GOROOT 2>/dev/null || true)
+# runner 的 Go 在 /opt/hostedtoolcache/go/<ver>/x64/bin 里，默认不进 PATH
+GO_BIN=$(command -v go 2>/dev/null || true)
+if [ -z "$GO_BIN" ]; then
+  for c in /opt/hostedtoolcache/go/*/x64/bin/go /opt/hostedtoolcache/go/*/arm64/bin/go \
+           /usr/local/go/bin/go /opt/go/bin/go "$HOME/go/bin/go"; do
+    [ -x "$c" ] && { GO_BIN="$c"; break; }
+  done
+fi
+GO_ROOT=$([ -n "$GO_BIN" ] && "$GO_BIN" env GOROOT 2>/dev/null || true)
 
 if [ -z "$GO_ROOT" ] || [ ! -x "$GO_ROOT/bin/go" ]; then
-  warn "Go: runner 没有可用的 go，跳过 external bootstrap"
+  warn "Go: runner 没有可用的 go（PATH 与 toolcache 都没有），跳过 external bootstrap"
 else
   # 能力检测：feed 的 Config.in 里必须真的有这几个符号
   #
