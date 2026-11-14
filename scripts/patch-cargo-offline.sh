@@ -24,9 +24,15 @@ cd "$OW" || { echo "::error::无法进入 $OW"; exit 1; }
 # 默认白名单：脚本头注释里确认过缺 crate 的包
 ALLOWLIST="${CARGO_OFFLINE_ALLOWLIST:-h3c-fttr-tools}"
 
-# 只看构建脚本本身：build_dir / staging_dir 里是解压出来的副本，改了没用
-LIST=$(grep -rlE -- '--frozen|--offline' \
+# 只看构建脚本本身：build_dir / staging_dir 里是解压出来的副本，改了没用。
+# 正则只认独立令牌 --frozen / --offline（后接空白或行尾），避免前缀误报：
+#   --frozen-lockfile（pnpm）、--offline-root（opkg）、Lua/HTML 注释里的 --offline。
+# 注意：--include/--exclude 是 grep 选项，必须排在模式之前；不能放在 `--` 之后，
+# 否则会被当成文件路径，include 过滤整体失效（本次误报的根因）。
+LIST=$(grep -rlE \
          --include=Makefile --include='*.mk' \
+         --exclude='*.sh' --exclude='*.lua' --exclude='*.htm' --exclude='*.html' --exclude='*.js' \
+         -e '--(frozen|offline)([[:space:]]|$)' \
          package feeds 2>/dev/null \
        | grep -v -e '/build_dir/' -e '/staging_dir/' || true)
 
@@ -79,8 +85,10 @@ fi
 echo "共放宽 $CHANGED 个文件（--locked 保留，仅去掉禁止联网的部分）"
 
 # 复核：还有没有漏网的（比如参数被拼在变量里、跨行续行）
-LEFT=$(grep -rlE -- '--frozen|--offline' \
+LEFT=$(grep -rlE \
          --include=Makefile --include='*.mk' \
+         --exclude='*.sh' --exclude='*.lua' --exclude='*.htm' --exclude='*.html' --exclude='*.js' \
+         -e '--(frozen|offline)([[:space:]]|$)' \
          package feeds 2>/dev/null \
        | grep -v -e '/build_dir/' -e '/staging_dir/' || true)
 if [ -n "$LEFT" ]; then
