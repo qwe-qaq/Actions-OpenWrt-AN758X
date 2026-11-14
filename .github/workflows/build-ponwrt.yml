@@ -1145,10 +1145,32 @@ jobs:
           OK=0
           if try_build "j${JOBS}" -j"${JOBS}"; then
             echo "多线程编译成功"; OK=1
-          elif try_build "j1" -j1; then
-            echo "单线程编译成功"; OK=1
-          elif try_build "verbose" -j1 V=s; then
-            echo "单线程详细日志编译成功"; OK=1
+          else
+            # subdir.mk 把真错误折叠成 `ERROR: <子目录> failed to build.`。
+            # 整棵树 -j1 / -j1 V=s 重试两遍对确定性编译错误毫无帮助，却要再烧
+            # 几十分钟。直接从这行取出出错的子目录，只重跑它（V=s，几秒）。
+            FAILED_SUB=$(grep -oE 'ERROR: [^ ]+ failed to build' "$LOGDIR/build.log" \
+              | tail -1 | sed 's/^ERROR: //; s/ failed to build$//' || true)
+            case "$FAILED_SUB" in
+              target/linux) VERBOSE_TARGET="target/linux/install" ;;
+              package/*)    VERBOSE_TARGET="$FAILED_SUB/compile" ;;
+              *)            VERBOSE_TARGET="" ;;
+            esac
+
+            if [ -n "$VERBOSE_TARGET" ]; then
+              echo "::group::单独重跑 $VERBOSE_TARGET（V=s，取真错误）"
+              make -j1 V=s "$VERBOSE_TARGET" >> "$LOGDIR/build.log" 2>&1 || true
+              tail -60 "$LOGDIR/build.log" || true
+              echo "::endgroup::"
+            else
+              # 没解析出子目录：可能是 OOM / 被 kill / 并发竞态，保留全树重试
+              echo "::warning::没解析出失败子目录（'$FAILED_SUB'），保留 -j1 / V=s 重试"
+              if try_build "j1" -j1; then
+                echo "单线程编译成功"; OK=1
+              elif try_build "verbose" -j1 V=s; then
+                echo "单线程详细日志编译成功"; OK=1
+              fi
+            fi
           fi
 
           if [ "$OK" -ne 1 ]; then
