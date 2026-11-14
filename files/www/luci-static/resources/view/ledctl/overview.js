@@ -144,7 +144,11 @@ return view.extend({
 			cell.textContent = '%d / %d'.format(value, cell.textContent.split('/')[1].trim());
 	},
 
-	handleTrigger: function(ev, led, sel) {
+	/*
+	 * 注意参数顺序：ui.createHandlerFn(ctx, name, ...args) 生成的处理器是
+	 * fn(...args, ev)，额外参数在前、事件对象在最后。这里不需要 ev，直接省略。
+	 */
+	handleTrigger: function(led, sel) {
 		var trigger = sel.value;
 		return callSet({ led: led, trigger: trigger }).then(function(res) {
 			if (!res || res.ok !== true)
@@ -154,7 +158,7 @@ return view.extend({
 		});
 	},
 
-	handleBright: function(ev, led, value) {
+	handleBright: function(led, value) {
 		return callSet({ led: led, brightness: value }).then(function(res) {
 			if (!res || res.ok !== true)
 				notify('danger', _('设置失败：%s').format((res && res.error) || _('未知错误')));
@@ -163,7 +167,7 @@ return view.extend({
 		}.bind(this));
 	},
 
-	handleBlink: function(ev, led) {
+	handleBlink: function(led) {
 		return callSet({ led: led, trigger: 'timer', delay_on: 500, delay_off: 500 }).then(function(res) {
 			if (!res || res.ok !== true)
 				notify('danger', _('设置失败：%s').format((res && res.error) || _('未知错误')));
@@ -172,7 +176,7 @@ return view.extend({
 		});
 	},
 
-	handleAll: function(ev, action) {
+	handleAll: function(action) {
 		return callAll({ action: action }).then(function(res) {
 			if (!res || res.ok !== true) {
 				notify('danger', _('操作失败：%s').format((res && res.error) || _('未知错误')));
