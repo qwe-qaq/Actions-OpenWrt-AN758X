@@ -261,10 +261,11 @@ jobs:
             rsync file wget curl git subversion 2>/dev/null || true
 
           # 初始化编译环境：脚本已内置到仓库 scripts/，不再 `curl | bash` 远端执行。
-          if [ -x "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" ]; then
+          # 脚本由 bash 调用，不需要执行位；检出文件常为 100644，故用 -f 判断，不能用 -x。
+          if [ -f "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" ]; then
             bash "$GITHUB_WORKSPACE/scripts/init_build_environment.sh" || true
           else
-            echo "::warning::scripts/init_build_environment.sh 缺失，跳过内置环境初始化"
+            echo "::warning::scripts/init_build_environment.sh 不存在，跳过内置环境初始化"
           fi
 
           sudo -E apt-get -yqq autoremove --purge
@@ -671,7 +672,7 @@ jobs:
           # 按机型选择对应的配置生成脚本
           if [ -f "$WS/scripts/gen-${PROFILE}.sh" ]; then
             bash "$WS/scripts/gen-${PROFILE}.sh"
-          elif [ -f "$WS/scripts/gen-hg5585f-config.sh" ] && [[ "$PROFILE" == hg5585f* ]]; then
+          elif [ -f "$WS/scripts/gen-hg5585f-config.sh" ] && [[ "$PROFILE" == hg5585f* || "$PROFILE" == fiberhome_hg5585f-* ]]; then
             bash "$WS/scripts/gen-hg5585f-config.sh"
           else
             echo "ℹ 未找到 ${PROFILE} 对应的配置脚本，跳过"
