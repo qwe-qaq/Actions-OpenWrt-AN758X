@@ -753,6 +753,19 @@ jobs:
           fi
           echo "✅ 状态插件校验通过"
 
+          # 面板 LED 插件只在 AN4475-G2 启用：15 颗灯的映射是这块板 PCA9555 的
+          # 实际脚位，别的机型装上会把灯点错。缺了它就是固件里没有灯语义守护，
+          # 光信号灯会停在 DTS 的 default-state（灭）上，所以这里当硬错误。
+          if [ "$PROFILE" = "fiberhome_an4475-g2" ]; then
+            if ! grep -q "^CONFIG_PACKAGE_luci-app-ledpanel=y" .config; then
+              echo "::error::luci-app-ledpanel 未启用，检查 diy-part1.sh 是否把包拷进 package/custom"
+              echo "  1) 包目录: $([ -d package/custom/luci-app-ledpanel ] && echo '存在' || echo '不存在')"
+              echo "  2) Makefile: $([ -f package/custom/luci-app-ledpanel/Makefile ] && echo '存在' || echo '不存在')"
+              exit 1
+            fi
+            echo "✅ 面板 LED 插件校验通过"
+          fi
+
           # 设备包闭环校验（DEVICE_PACKAGES → CONFIG_PACKAGE_*=y）：
           #   DEVICE_PACKAGES 经 target-metadata 变成 select DEFAULT_<pkg>，
           #   元数据陈旧就指空、包静默消失，直到 image.mk 的 apk 路径

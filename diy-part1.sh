@@ -45,7 +45,10 @@ ADD_OAF=true           # luci-app-oaf（应用过滤，含内核模块，高风�
 ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
                         #   ├─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
-                        #   └─ luci-app-igmpproxy    IGMP Proxy 组播代理 Web 界面
+                        #   ├─ luci-app-igmpproxy    IGMP Proxy 组播代理 Web 界面
+                        #   └─ luci-app-ledpanel    面板 LED 控制（系统 → 面板 LED）
+                        #      ★只有 configs/fiberhome_an4475-g2.config 里 =y：
+                        #        灯位映射是这块板的 PCA9555 脚位，换机型不适用
 # 下面这几个开关都能被环境变量覆盖（: ${VAR:=默认} 的写法）：
 # workflow 里选了「不拉私有仓库」时会注入 ADD_FTTR=false，整段直接跳过。
 : "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
@@ -82,22 +85,23 @@ clone() {  # clone <url> <dir> [branch]
   return 1
 }
 # =========================================================
-# qwe3017/luci-app —— 三个 LuCI 插件的来源
+# qwe3017/luci-app —— 四个 LuCI 插件的来源
 #
 # 这是一个 monorepo，结构为：
 #   luci-app/
 #   ├── luci-app-natmode/
 #   ├── luci-app-pon-status/
-#   └── luci-app-igmpproxy/
+#   ├── luci-app-igmpproxy/
+#   └── luci-app-ledpanel/   面板 LED 语义守护（只有 AN4475-G2 的 config 启用）
 # =========================================================
 if [ "$ADD_LUCI_APP" = "true" ]; then
   LUCI_APP_URL="https://github.com/qwe-qaq/luci-app"
   LUCI_APP_TMP="$(mktemp -d)/luci-app"
   if ! clone "$LUCI_APP_URL" "$LUCI_APP_TMP" main; then
-    echo "::error::qwe3017/luci-app 拉取失败，natmode / pon-status / igmpproxy 会被 defconfig 剔除"
+    echo "::error::qwe3017/luci-app 拉取失败，natmode / pon-status / igmpproxy / ledpanel 会被 defconfig 剔除"
     exit 1
   fi
-  for p in luci-app-natmode luci-app-pon-status luci-app-igmpproxy; do
+  for p in luci-app-natmode luci-app-pon-status luci-app-igmpproxy luci-app-ledpanel; do
     if [ ! -f "$LUCI_APP_TMP/$p/Makefile" ]; then
       echo "::error::$LUCI_APP_TMP/$p/Makefile 不存在，包无法被索引"
       exit 1
