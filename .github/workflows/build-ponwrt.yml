@@ -158,10 +158,10 @@ on:
       private_repo:
         description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
         required: false
-        default: 'qwe-qaq/openwrt-fttr'
+        default: 'LazuliKao/openwrt-fttr'
         type: choice
         options:
-          - qwe-qaq/openwrt-fttr
+          - LazuliKao/openwrt-fttr
           - none
       private_repo_branch:
         description: '私有仓库分支'
