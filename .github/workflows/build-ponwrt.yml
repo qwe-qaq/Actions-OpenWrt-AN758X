@@ -662,11 +662,16 @@ jobs:
           # 只剥非注释行的行尾注释，保留 "# CONFIG_X is not set" 这种整行注释。
           clean_cfg() { sed -E '/^[[:space:]]*#/! s/[[:space:]]+#.*$//' "$1"; }
 
+          # 同时落盘一份净化后的机型配置：defconfig 之后要用它把被 kbuild
+          # 降级成 "# ... is not set" 的显式 =y 符号写回（见 Validate configuration）。
+          EXP="$GITHUB_WORKSPACE/.ci-explicit.config"
           if [ -e "$GITHUB_WORKSPACE/${CONFIG_FILE}" ]; then
-            clean_cfg "$GITHUB_WORKSPACE/${CONFIG_FILE}" >> .config
+            clean_cfg "$GITHUB_WORKSPACE/${CONFIG_FILE}" > "$EXP"
+            cat "$EXP" >> .config
             echo "✅ 已追加机型配置: ${CONFIG_FILE}（行尾注释已剥离）"
           elif [ -e "$GITHUB_WORKSPACE/configs/${SOC}.config" ]; then
-            clean_cfg "$GITHUB_WORKSPACE/configs/${SOC}.config" >> .config
+            clean_cfg "$GITHUB_WORKSPACE/configs/${SOC}.config" > "$EXP"
+            cat "$EXP" >> .config
             echo "✅ 已追加 SoC 通用配置（行尾注释已剥离）"
           else
             echo "::error::找不到机型配置 ${CONFIG_FILE}"
@@ -743,6 +748,43 @@ jobs:
           [ -f "$S" ] || { echo "::error::缺 $S"; exit 1; }
           dos2unix "$S" 2>/dev/null || true
           bash "$S" "$PWD"
+
+          # ---------------------------------------------------------------
+          # defconfig 会把机型配置里显式 =y 的包降级成 "# ... is not set"。
+          # Kconfig 的 depends on 不满足时（vendor 包的 CONFLICTS 生成的
+          # "depends on m || (PACKAGE_xxx != y)"、被 select 的包把自己
+          # 的 depends 重发射到本包等），kbuild 以约束为准，显式写进
+          # .config 的 =y 会被改回 n —— 即使所有运行时依赖都已 =y。
+          #
+          # 但 OpenWrt 编译期只读 .config 里的 CONFIG_PACKAGE_x=y 来决定
+          # 编哪些包，不会重新跑 Kconfig 依赖校验。机型配置已把该包的
+          # 全部运行时依赖显式写成 =y，所以把这些符号写回是安全且必要的；
+          # 否则 target/linux install 的 apk add / world 会因缺包硬失败。
+          #
+          # 只对「机型配置里显式 =y」的符号写回，绝不碰配置里主动写的
+          # "# CONFIG_x is not set"（例如 mt76/mac80211 路线），避免误开包。
+          # 只对 vendor Wi-Fi 7 路线启用，master/mt76 路线保持原行为。
+          # ---------------------------------------------------------------
+          if [ "${WIFI7_VENDOR}" = "true" ] && [ -f "$GITHUB_WORKSPACE/.ci-explicit.config" ]; then
+            RESTORED=""
+            while IFS= read -r _line; do
+              case "$_line" in
+                CONFIG_PACKAGE_*=y) ;;
+                *) continue ;;
+              esac
+              _sym="${_line%%=*}"
+              if grep -qx "# ${_sym} is not set" .config; then
+                sed -i "s|^# ${_sym} is not set|${_sym}=y|" .config
+                RESTORED="$RESTORED ${_sym}"
+              fi
+            done < "$GITHUB_WORKSPACE/.ci-explicit.config"
+            if [ -n "$RESTORED" ]; then
+              echo "::warning::defconfig 降级了机型配置里显式 =y 的包，已写回:$RESTORED"
+              printf '%s\n' "$RESTORED" | tr ' ' '\n' | sed '/^$/d; s/^/    /'
+            else
+              echo "✅ 机型配置显式 =y 的包在 defconfig 后全部保留"
+            fi
+          fi
 
           # 关键包校验：defconfig 会静默剔除 feeds 里不存在的包，光口链路必须还在
           MISSING=""
@@ -843,14 +885,15 @@ jobs:
                 for p in $MISS_DEV; do
                   echo "▸ ${p}"
                   echo "    元数据记录: $(grep -c "^Package: ${p}\$" tmp/.packageinfo 2>/dev/null || echo 0) 条"
-                  echo "    配置符号:   $(grep -c "^config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo 0) 条"
+                  echo "    配置符号:   $(grep -c "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo 0) 条"
                   echo "    在 .config: $(grep -E "^(# )?CONFIG_PACKAGE_${p}[= ]" .config 2>/dev/null | head -1 | sed 's/^ *//' || echo 无)"
                   echo "    image 引用: $(grep -rn "${p}" target/linux/airoha/image/*.mk 2>/dev/null | head -2 | sed 's/^ *//' || echo 无)"
                   # 二次失败时直接看符号的 depends / select 与上游依赖是否被剔除
                   echo "    Kconfig 符号上下文:"
-                  grep -n -A8 "^config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null | head -10 | sed 's/^/       /' || echo "       (无)"
-                  echo "    DEPENDS 闭包在 .config 的状态:"
-                  grep -nE "CONFIG_PACKAGE_(ucode-mod-l1parser|ucode-mod-datconf|datconf|libl1parser|iwinfo-ucode|wifi-scripts|mwctl)" .config 2>/dev/null | head -12 | sed 's/^/       /' || echo "       (无)"
+                  grep -n -A8 "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null | head -10 | sed 's/^/       /' || echo "       (无)"
+                  echo "    DEPENDS 闭包 / 冲突包在 .config 的状态:"
+                  grep -nE '^(# )?CONFIG_PACKAGE_(mtwifi-cfg|ucode|ucode-mod-|iwinfo-ucode|datconf|libl1parser|libkvcutil|kvcedit|l1util|wifi-scripts|mwctl)' .config 2>/dev/null | head -30 | sed 's/^/       /' || echo "       (无)"
+                  echo "    lua 版冲突包 mtwifi-cfg: $(grep -E '^(# )?CONFIG_PACKAGE_mtwifi-cfg[ =]' .config 2>/dev/null | head -2 | tr '\n' ' ' || echo '(符号不存在)')"
                 done
                 echo "--- 两种成因 ---"
                 echo "  A) 包确实不存在/被 feeds 剔除 → tmp/.packageinfo 里是 0 条"
