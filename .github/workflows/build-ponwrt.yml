@@ -768,8 +768,13 @@ jobs:
           if [ "${WIFI7_VENDOR}" = "true" ] && [ -f "$GITHUB_WORKSPACE/.ci-explicit.config" ]; then
             RESTORED=""
             while IFS= read -r _line; do
+              # 不只 CONFIG_PACKAGE_*：vendor 驱动的功能开关是包内 Kconfig
+              # 符号（CONFIG_MTK_WIFI7_MT_WIFI、CONFIG_MTK_WIFI7_CFG80211_SUPPORT、
+              # CONFIG_MTK_HWIFI_MT7993…），它们跟着 PACKAGE_kmod-mt_wifi7 一起
+              # 被降级，而编译期只读 .config，不会重新算依赖 —— 不写回就会
+              # 编出一个功能残缺的驱动（能加载、没有 AP）。
               case "$_line" in
-                CONFIG_PACKAGE_*=y) ;;
+                CONFIG_PACKAGE_*=y|CONFIG_MTK_*=y|CONFIG_DRIVER_11*=y|CONFIG_first_card*=y) ;;
                 *) continue ;;
               esac
               _sym="${_line%%=*}"
@@ -925,6 +930,8 @@ jobs:
               CONFIG_PACKAGE_airoha-en7581-mt7996-npu-firmware=y \
               CONFIG_MTK_HWIFI_MT7993=y \
               CONFIG_MTK_HWIFI_MT799B=y \
+              CONFIG_MTK_WIFI7_MT_WIFI=y \
+              CONFIG_MTK_WIFI7_MT_AP_SUPPORT=y \
               CONFIG_MTK_WIFI7_CHIP_MT7993=y \
               CONFIG_MTK_WIFI7_OSAL_SUPPORT=y \
               CONFIG_MTK_WIFI7_CFG80211_SUPPORT=y \
