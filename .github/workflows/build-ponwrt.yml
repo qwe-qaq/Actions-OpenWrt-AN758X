@@ -657,12 +657,17 @@ jobs:
           [ -d files/etc/uci-defaults ] && chmod +x files/etc/uci-defaults/* 2>/dev/null
 
 
+          # Kconfig 读 .config 时把 "=y  # 注释" 中 # 之后的全部内容当值，
+          # int/string 符号会报 "symbol value ... invalid" 并回落默认，bool 也可能掉。
+          # 只剥非注释行的行尾注释，保留 "# CONFIG_X is not set" 这种整行注释。
+          clean_cfg() { sed -E '/^[[:space:]]*#/! s/[[:space:]]+#.*$//' "$1"; }
+
           if [ -e "$GITHUB_WORKSPACE/${CONFIG_FILE}" ]; then
-            cat "$GITHUB_WORKSPACE/${CONFIG_FILE}" >> .config
-            echo "✅ 已追加机型配置: ${CONFIG_FILE}"
+            clean_cfg "$GITHUB_WORKSPACE/${CONFIG_FILE}" >> .config
+            echo "✅ 已追加机型配置: ${CONFIG_FILE}（行尾注释已剥离）"
           elif [ -e "$GITHUB_WORKSPACE/configs/${SOC}.config" ]; then
-            cat "$GITHUB_WORKSPACE/configs/${SOC}.config" >> .config
-            echo "✅ 已追加 SoC 通用配置"
+            clean_cfg "$GITHUB_WORKSPACE/configs/${SOC}.config" >> .config
+            echo "✅ 已追加 SoC 通用配置（行尾注释已剥离）"
           else
             echo "::error::找不到机型配置 ${CONFIG_FILE}"
             exit 1
@@ -841,6 +846,11 @@ jobs:
                   echo "    配置符号:   $(grep -c "^config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null || echo 0) 条"
                   echo "    在 .config: $(grep -E "^(# )?CONFIG_PACKAGE_${p}[= ]" .config 2>/dev/null | head -1 | sed 's/^ *//' || echo 无)"
                   echo "    image 引用: $(grep -rn "${p}" target/linux/airoha/image/*.mk 2>/dev/null | head -2 | sed 's/^ *//' || echo 无)"
+                  # 二次失败时直接看符号的 depends / select 与上游依赖是否被剔除
+                  echo "    Kconfig 符号上下文:"
+                  grep -n -A8 "^config PACKAGE_${p}\$" tmp/.config-package.in 2>/dev/null | head -10 | sed 's/^/       /' || echo "       (无)"
+                  echo "    DEPENDS 闭包在 .config 的状态:"
+                  grep -nE "CONFIG_PACKAGE_(ucode-mod-l1parser|ucode-mod-datconf|datconf|libl1parser|iwinfo-ucode|wifi-scripts|mwctl)" .config 2>/dev/null | head -12 | sed 's/^/       /' || echo "       (无)"
                 done
                 echo "--- 两种成因 ---"
                 echo "  A) 包确实不存在/被 feeds 剔除 → tmp/.packageinfo 里是 0 条"
