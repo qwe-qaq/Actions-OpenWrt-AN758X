@@ -452,6 +452,15 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
       *)               echo "$1" ;;
     esac
   }
+  # 目录名和 PKG_NAME 毫无关系时（l1parser → ucode-mod-l1parser、
+  # mt_wifi7 → kmod-mt_wifi7），按目录名猜包名必然误报。
+  # .packageinfo 每段都带 "Source: <相对目录>"，按目录反查是唯一可靠的判据。
+  pkg_by_source() {
+    awk -v src="$1" '
+      /^Package: / { p = $2 }
+      /^Source: /  { if ($2 == src && p != "") printf "%s ", p }
+    ' tmp/.packageinfo 2>/dev/null
+  }
 
   for d in "$PKG_DIR"/*; do
     [ -d "$d" ] || continue
@@ -470,11 +479,16 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
         if grep -qx "Package: $sn" tmp/.packageinfo 2>/dev/null; then
           echo "  ✅ $n → $sn"
         else
-          echo "  ❌ $n → $sn —— tmp/.packageinfo 里查不到"
-          INDEX_MISS="$INDEX_MISS $sn"
-          for f in "logs/package/$sn/dump.txt" "logs/package/custom/$sn/dump.txt"; do
-            [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
-          done
+          real="$(pkg_by_source "$d/$sn")"
+          if [ -n "$real" ]; then
+            echo "  ✅ $n → $(echo $real | cut -d' ' -f1-3)"
+          else
+            echo "  ❌ $n → $sn —— tmp/.packageinfo 里查不到"
+            INDEX_MISS="$INDEX_MISS $sn"
+            for f in "logs/package/$sn/dump.txt" "logs/package/custom/$sn/dump.txt"; do
+              [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
+            done
+          fi
         fi
       done
       [ "$found" = 1 ] || echo "  -  $n（无 Makefile，跳过）"
@@ -484,20 +498,32 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     pn="$(pkgname_of "$n")"
     if grep -qx "Package: $pn" tmp/.packageinfo 2>/dev/null; then
       echo "  ✅ $n${pn:+$([ "$pn" != "$n" ] && echo " → $pn")}"
-    else
-      echo "  ❌ $n（包名 $pn）—— tmp/.packageinfo 里查不到"
-      INDEX_MISS="$INDEX_MISS $pn"
-      # 真实错误在这里（scan.mk 落盘路径 logs/<SCAN_DIR>/<相对目录>/dump.txt）
-      DUMP_SHOWN=0
-      for f in "logs/package/$n/dump.txt" "logs/package/custom/$n/dump.txt"; do
-        [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; DUMP_SHOWN=1; }
-      done
-      # scan.mk 压根没落 dump.txt（缓存跳过扫描时常见）：直接单包 dump 一次，
-      # 把 Makefile 解析错误打出来，避免「查不到但日志里没有任何线索」。
-      if [ "$DUMP_SHOWN" -eq 0 ]; then
-        echo "===== 直接 dump: make $d/dump V=s ====="
-        make "$d/dump" V=s 2>&1 | tail -40
-      fi
+      continue
+    fi
+    # 目录名猜错不算缺失：按 Source 反查真实包名（含 KernelPackage 的
+    # kmod-* 变体），命中即通过，避免「包明明在索引里却报 ❌」。
+    real="$(pkg_by_source "$d")"
+    if [ -n "$real" ]; then
+      echo "  ✅ $n → $(echo $real | cut -d' ' -f1-3)"
+      continue
+    fi
+    echo "  ❌ $n（包名 $pn）—— tmp/.packageinfo 里查不到"
+    INDEX_MISS="$INDEX_MISS $pn"
+    # 真实错误在这里（scan.mk 落盘路径 logs/<SCAN_DIR>/<相对目录>/dump.txt）
+    DUMP_SHOWN=0
+    for f in "logs/package/$n/dump.txt" "logs/package/custom/$n/dump.txt"; do
+      [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; DUMP_SHOWN=1; }
+    done
+    # scan.mk 压根没落 dump.txt（缓存跳过扫描时常见）：直接单包 dump 一次，
+    # 把 Makefile 解析错误打出来，避免「查不到但日志里没有任何线索」。
+    if [ "$DUMP_SHOWN" -eq 0 ]; then
+      echo "===== 直接 dump: make $d/dump V=s ====="
+      # 没有 .config 时 toplevel.mk 会把 dump 走到 menuconfig 分支，
+      # CI 无 TTY 直接 "Error opening terminal: unknown"，一行 Makefile
+      # 错误都看不到。补一个空 .config 即可：后续 Load custom
+      # configuration 是用 >> 追加，空文件与「文件不存在」等价。
+      [ -f .config ] || : > .config
+      make "$d/dump" V=s 2>&1 | tail -40
     fi
   done
   echo "------------------------------------------"
