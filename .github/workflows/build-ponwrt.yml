@@ -53,7 +53,7 @@ on:
           - fork
           - pbs05/ponwrt
       branch:
-        description: 'ponwrt 源码分支'
+        description: 'ponwrt 源码分支（AN4475-G2 用 vendor Wi-Fi 7 驱动时填 wifi7-an4475，并选 source=fork；master 走 mt76 路线）'
         required: true
         default: 'master'
       soc:
@@ -215,6 +215,24 @@ jobs:
             echo "::warning::AN4475-G2 的板级支持在 qwe-qaq/ponwrt（source=fork），当前 ${SOURCE} 尚无该 profile；请把 source 选为 fork"
           fi
 
+          # vendor Wi-Fi 7 分支（qwe-qaq/ponwrt@wifi7-an4475）与 master 的
+          # mt76 路线互斥：DTS 已删除 mediatek,mt76 子节点，配置必须换成
+          # configs/fiberhome_an4475-g2-wifi7.config，否则 vendor 包不会进
+          # .config，Validate configuration 的设备包校验会直接失败。
+          WIFI7_VENDOR=false
+          if [ "${REPO_BRANCH}" = "wifi7-an4475" ]; then
+            if [ "${SOURCE}" != "fork" ]; then
+              echo "::error::wifi7-an4475 分支只存在于 qwe-qaq/ponwrt，请把 source 选为 fork"
+              exit 1
+            fi
+            if [ "$PROFILE" = "fiberhome_an4475-g2" ]; then
+              WIFI7_VENDOR=true
+            else
+              echo "::warning::branch=wifi7-an4475 但 profile=${PROFILE}，仍使用 ${PROFILE} 的常规配置（不含 vendor Wi-Fi 7 包）"
+            fi
+          fi
+          echo "WIFI7_VENDOR=${WIFI7_VENDOR}" >> "$GITHUB_ENV"
+
           if [ "$PROFILE" != "all" ]; then
             case "$PROFILE" in
               nokia_xg-040g-mf*) SOC="an7583" ;;
@@ -228,9 +246,12 @@ jobs:
           # DEVICE_NAME 同时决定 artifact 名 / Release tag / 旧 tag 清理三处；
           # 末尾带 host 模式，source 与 prebuilt 并行时产物不互相覆盖。
           echo "DEVICE_NAME=ponwrt-${SOC}-${PROFILE}-${HOST_MODE}" >> "$GITHUB_ENV"
-          # profile=all 用 SoC 通用配置
+          # profile=all 用 SoC 通用配置；vendor Wi-Fi 7 分支用专用配置
           if [ "$PROFILE" = "all" ]; then
             echo "CONFIG_FILE=configs/${SOC}.config" >> "$GITHUB_ENV"
+          elif [ "${WIFI7_VENDOR}" = "true" ]; then
+            echo "CONFIG_FILE=configs/fiberhome_an4475-g2-wifi7.config" >> "$GITHUB_ENV"
+            echo "✅ vendor Wi-Fi 7 配置: configs/fiberhome_an4475-g2-wifi7.config"
           else
             echo "CONFIG_FILE=configs/${PROFILE}.config" >> "$GITHUB_ENV"
           fi
@@ -830,6 +851,63 @@ jobs:
               fi
               echo "✅ 设备包校验通过（${CHK} 个 DEVICE_PACKAGES 全部能被编出来）"
             fi
+          fi
+
+          # vendor Wi-Fi 7 关键符号校验：package/custom 是 Kconfig 驱动的，
+          # 光在 configs 里写 =y 不够 —— 源码分支不对 / feeds 没装 / @SYMBOL
+          # 未启用时，defconfig 会把符号静默剔除，直到几小时后的编译期才炸。
+          if [ "${WIFI7_VENDOR}" = "true" ]; then
+            W7_MISS=""
+            for sym in \
+              CONFIG_PACKAGE_kmod-mt_wifi7=y \
+              CONFIG_PACKAGE_kmod-mt_wifi_osal=y \
+              CONFIG_PACKAGE_kmod-mt_hwifi=y \
+              CONFIG_PACKAGE_kmod-mtk_pci=y \
+              CONFIG_PACKAGE_kmod-connac_if=y \
+              CONFIG_PACKAGE_kmod-mt7993=y \
+              CONFIG_PACKAGE_kmod-mt799b=y \
+              CONFIG_PACKAGE_wifi-profile=y \
+              CONFIG_PACKAGE_mtwifi-cfg-ucode=y \
+              CONFIG_PACKAGE_mwctl=y \
+              CONFIG_PACKAGE_airoha-en7581-mt7996-npu-firmware=y \
+              CONFIG_MTK_HWIFI_MT7993=y \
+              CONFIG_MTK_HWIFI_MT799B=y \
+              CONFIG_MTK_WIFI7_CHIP_MT7993=y \
+              CONFIG_MTK_WIFI7_OSAL_SUPPORT=y \
+              CONFIG_MTK_WIFI7_CFG80211_SUPPORT=y \
+              CONFIG_DRIVER_11BE_SUPPORT=y \
+              CONFIG_DRIVER_11AX_SUPPORT=y \
+              CONFIG_DRIVER_11AC_SUPPORT=y ; do
+              grep -q "^${sym}" .config || W7_MISS="$W7_MISS ${sym%%=*}"
+            done
+            grep -q '^CONFIG_first_card_name="MT7993"' .config \
+              || W7_MISS="$W7_MISS CONFIG_first_card_name"
+            grep -q '^CONFIG_first_card_EEPROM_size="0x14a800"' .config \
+              || W7_MISS="$W7_MISS CONFIG_first_card_EEPROM_size"
+            grep -q '^CONFIG_first_card_EEPROM_name="e2p"' .config \
+              || W7_MISS="$W7_MISS CONFIG_first_card_EEPROM_name"
+            if [ -n "$W7_MISS" ]; then
+              echo "::error::vendor Wi-Fi 7 关键符号在 defconfig 后缺失:$W7_MISS"
+              echo "::error::检查 source=fork / branch=wifi7-an4475、feeds install 是否完整、"
+              echo "::error::以及 diy-part1.sh 是否重建了 package/custom 的包索引 (tmp/.packageinfo)"
+              exit 1
+            fi
+            echo "✅ vendor Wi-Fi 7 关键符号校验通过（vendor 包 / MTK SDK Kconfig / L1 profile）"
+
+            # mt76 路线必须彻底关掉：DTS 已删除 mediatek,mt76 子节点，
+            # 装上也是白占空间，子节点若还在则会与 vendor 驱动抢 endpoint。
+            W7_CONFLICT=""
+            for p in kmod-mt76-core kmod-mt76-connac kmod-mt7996e kmod-mt7990-firmware kmod-mac80211; do
+              if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
+                W7_CONFLICT="$W7_CONFLICT $p"
+              fi
+            done
+            if [ -n "$W7_CONFLICT" ]; then
+              echo "::error::vendor Wi-Fi 7 模式下仍启用 mt76/mac80211 包:$W7_CONFLICT"
+              echo "::error::请从 configs/fiberhome_an4475-g2-wifi7.config 移除这些 =y"
+              exit 1
+            fi
+            echo "✅ mt76/mac80211 冲突包未启用"
           fi
 
           # 代理插件校验（只警告）：kconfig 只认 CONFIG_PACKAGE_x=y，

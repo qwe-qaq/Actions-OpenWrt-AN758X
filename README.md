@@ -20,7 +20,7 @@
 | 输入 | 取值 | 说明 |
 |---|---|---|
 | `source` | `pbs05/ponwrt` / `fork` | 编译哪个源码仓库。**必须和缓存预热时选的一致**，否则前缀对不上 |
-| `branch` | 默认 `master` | |
+| `branch` | 默认 `master` / `wifi7-an4475` | AN4475-G2 用 vendor Wi-Fi 7 驱动时填 `wifi7-an4475`（需 `source=fork`）；分支进缓存 key 前缀，预热与主流程必须一致 |
 | `soc` | `an7581` / `an7583` | |
 | `profile` | 见下方机型表，`all` = 全机型 | 写错会在 `Validate configuration` 直接报错退出，不会静默全编 |
 | `scope` | `firmware` / `toolchain-only` | 后者只建工具链缓存，不出固件、不发 Release |
@@ -48,6 +48,43 @@
 ※ `h3c_hm2004-du` 额外依赖私有仓库 `openwrt-fttr`（FTTR 驱动 / 控制端 / FPGA 固件）与 `luci-app-fttr`，缺凭证时 `diy-part1.sh` 会直接报错退出。
 
 † `fiberhome_an4475-g2` 的板级 DTS / profile 在 **`qwe-qaq/ponwrt@master`**，构建时 `source` 必须选 `fork`（`pbs05/ponwrt` 尚未合入，会在 `Validate configuration` 阶段因机型符号不存在而失败）。`factory` UBI 卷为 **2 MiB**（AN4-2MiB 容器）。FTTR 后端三件套（`h3c-fmcs` / `openwrt-fttr` / FPGA 固件）是 HM2004-DU 专属，本机用 SoC 内置下行 PON，**不启用** `ADD_FTTR`。
+
+  另有 **`wifi7-an4475` 分支的 vendor full-MAC 驱动路线**，与 `master` 的 mt76 路线互斥，见下一节。
+
+## AN4475-G2 vendor Wi-Fi 7 云编译（`wifi7-an4475` 分支）
+
+原厂无线栈是 MediaTek **vendor full-MAC** 驱动（`mt_wifi` / `mtk_hwifi` / `mt7993` / `mt799b` / `wifi-profile`），不是 mt76/mac80211。`qwe-qaq/ponwrt@wifi7-an4475` 分支已把这套包放进 `package/custom/`，并**删除了 DTS 里的 `mediatek,mt76` PCIe 子节点**，让 vendor 驱动按 PCI `14c3:7993` / `14c3:799b` 绑定。两条路线互斥：
+
+| | `master` + `configs/fiberhome_an4475-g2.config` | `wifi7-an4475` + `configs/fiberhome_an4475-g2-wifi7.config` |
+|---|---|---|
+| 驱动 | mt76 / mac80211（`kmod-mt7996e` + `kmod-mt7990-firmware`） | vendor full-MAC（`kmod-mt_wifi7` / `mt_hwifi` / `mt7993` / `mt799b`） |
+| DTS | 有 `mt7990@0,0 { compatible = "mediatek,mt76" }` | 已删除该子节点 |
+| 固件 | `mt7990_wm.bin` / `rom_patch` | `WIFI_RAM_CODE_MT7993_1_1.bin` / `WIFI_MT7993_PATCH_MCU_1_1_hdr.bin` / `MT7993_EEPROM.bin` |
+| NPU 固件 | `en7581_npu_*.bin`（`airoha-en7581-npu-firmware`） | `en7581_MT7996_npu_*.bin`（`airoha-en7581-mt7996-npu-firmware`，与 DTS `firmware-name` 一致） |
+| 校准 | mt76 默认 | `wifi_e2p.init` 从 Factory 分区提取 `e2p`（`0x14a800`） |
+
+### 运行步骤
+
+1. **Warm Build Cache**（可选但推荐）→ `soc=an7581`、`source=fork`、**`branch=wifi7-an4475`**、`prebuilt_host=预编译`。缓存 key 含分支，预热与主流程必须填**同一个**分支。
+2. **Build PonWrt** → `source=fork`、**`branch=wifi7-an4475`**、`soc=an7581`、`profile=fiberhome_an4475-g2`、`scope=firmware`、`prebuilt_host=true`。
+3. `Resolve device profile` 检测到 `REPO_BRANCH=wifi7-an4475` 会自动把 `CONFIG_FILE` 切到 `configs/fiberhome_an4475-g2-wifi7.config`，并导出 `WIFI7_VENDOR=true`；`Validate configuration` 会额外校验 vendor 包、MTK SDK Kconfig 符号、L1 profile 是否都在 defconfig 后存活，以及 mt76 冲突包是否已关闭。
+4. 产物在 Artifact `OpenWrt_firmware_ponwrt-an7581-fiberhome_an4475-g2-prebuilt*` 与 Release tag `ponwrt-an7581-fiberhome_an4475-g2-prebuilt-wifi7-an4475`。
+
+> 用 `pbs05/ponwrt` 或 `master` 跑 AN4475-G2 时保持原样即可（mt76 路线），本改动不会影响其它机型。
+
+### 配置要点（`configs/fiberhome_an4475-g2-wifi7.config`）
+
+- `CONFIG_PACKAGE_kmod-mt_wifi7` / `mt_wifi_osal` / `mt_hwifi` / `mtk_pci` / `connac_if` / `mt7993` / `mt799b` / `wifi-profile` / `mtwifi-cfg-ucode` / `mwctl` 全部 `=y`，与源码树 `image/an7581.mk` 的 `DEVICE_PACKAGES` 逐项对账（`Validate configuration` 会核对 `tmp/.targetinfo` 的 `Target-Profile-Packages`）。
+- `CONFIG_MTK_HWIFI_MT7993=y` / `MT799B=y`：这两个符号在 `config.in` 里**没有 default y**，不写就选不中芯片包，且 `mt_hwifi/Makefile` 的 MT7993 固件安装块也不会执行。`RRO_MODE=5` / `OPTION_TYPE=1` / `INTR_OPTION_SET=4` 对齐原厂 EN7581 加载参数。
+- `CONFIG_MTK_WIFI7_CHIP_MT7993=y`：触发 `mt_wifi7/Makefile` 安装 `MT7993_EEPROM.bin` 与 iPAiLNA / ePAeLNA 默认 bin。
+- `CONFIG_DRIVER_11AC/AX/BE_SUPPORT=y`：`mt_wifi7` 的 `DEPENDS` 带 `+@DRIVER_11*` 三个符号，默认全是 n。
+- `CONFIG_first_card_*`（`name="MT7993"`、`EEPROM_size="0x14a800"`、`EEPROM_name="e2p"`、`main_ifname="ra0;rai0"`），并显式 `# CONFIG_second_card is not set` / `# CONFIG_third_card is not set`（`l1profile.config.in` 里两者默认 y，是 MT7615）。`make-l1profile.py` 只认 `.config` 里显式出现的行，缺了会生成只有 `Default` 的空 `l1profile.dat`。
+- `EEPROM_name` 必须用 `e2p`：`wifi_e2p.init` 在 `/lib/firmware/$FIRMWARE` 已存在时直接 return，若写 `MT7993_EEPROM.bin` 会命中包内自带的 7680 B 默认 blob，**跳过从 Factory 分区提取设备专属校准数据**。
+- **不要**启用 `MTK_WIFI7_FAST_NAT_SUPPORT` / `WHNAT_SUPPORT` / `CONNINFRA_APSOC` / `MTK_HWIFI_WED_SUPPORT` / `EN_HWIFI_NPU_SUPPORT`：它们会引入本树不存在的 `kmod-mediatek_hnat` / `kmod-conninfra` / `kmod-warp`。参考仓库的 `mt7987-mt7993-be3600.config` 不能照搬。
+
+### 编译后仍需实机验证
+
+CI 只能证明「编译通过、镜像里固件齐全」，不能证明「加载成功、稳定联网」。刷机后请核对：`lspci -nn` 有 `14c3:7993`/`14c3:799b`、`lsmod` 中 vendor 模块按 AUTOLOAD 61→66 全部加载、`dmesg` 无 `request_firmware` 失败与 `Unknown symbol`、`/lib/firmware/e2p` 约 `0x14a800`、`iw dev` 生成 `ra0`/`rai0`、`wifi status` 正常，以及吞吐 / 长时间稳定性。
 
 ## 插件开关（`diy-part1.sh`）
 

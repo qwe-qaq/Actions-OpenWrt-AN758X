@@ -34,7 +34,7 @@ on:
           - pbs05/ponwrt
           - fork
       branch:
-        description: 'ponwrt 源码分支'
+        description: 'ponwrt 源码分支（主流程填 wifi7-an4475 时这里也必须填 wifi7-an4475，否则缓存 key 前缀对不上）'
         required: true
         default: 'master'
       force:
