@@ -989,6 +989,20 @@ jobs:
             grep -q "^CONFIG_WIFI_SCRIPTS_UCODE=y" .config \
               || echo "::warning::CONFIG_WIFI_SCRIPTS_UCODE 不是 y：/usr/bin/iwinfo 可能无人提供"
             echo "✅ iwinfo 与 iwinfo-ucode 不冲突"
+
+            # wifi-profile 的 WIFI_SCRIPT_SUPPORT（默认 y）会装 /sbin/wifi
+            # （files/common/wifi_jedi）和 /lib/wifi/*.lua，那是 lua 版
+            # wifi_jedi + mtwifi-cfg 的组合；mtwifi-cfg-ucode 路线下 /sbin/wifi
+            # 必须归 wifi-scripts，否则 apk 装配时硬报：
+            #   ERROR: wifi-profile-1: trying to overwrite sbin/wifi
+            #          owned by wifi-scripts-1.0-r4
+            if grep -q "^CONFIG_WIFI_SCRIPT_SUPPORT=y" .config; then
+              echo "::error::CONFIG_WIFI_SCRIPT_SUPPORT=y 会让 wifi-profile 抢 /sbin/wifi（属于 wifi-scripts）"
+              echo "::error::请在 configs/fiberhome_an4475-g2-wifi7.config 里写"
+              echo "::error::  '# CONFIG_WIFI_SCRIPT_SUPPORT is not set'（wifi_jedi/lua 是 mtwifi-cfg 路线）"
+              exit 1
+            fi
+            echo "✅ /sbin/wifi 只由 wifi-scripts 提供"
           fi
 
           # 代理插件校验（只警告）：kconfig 只认 CONFIG_PACKAGE_x=y，
