@@ -1003,6 +1003,21 @@ jobs:
               exit 1
             fi
             echo "✅ /sbin/wifi 只由 wifi-scripts 提供"
+
+            # 板级 dts 里写错一个 label，dtc 会在 target/linux/install 阶段
+            # abort（那时内核已经编完，几十分钟）：
+            #   ERROR (phandle_references): /soc/pcie@1fc00000:
+            #   Reference to non-existent node or label "pcie0_pins"
+            # 这种错误纯文本就能查，用一个几十行的脚本提前到这一步。
+            DTS="target/linux/airoha/dts/an7581-fiberhome-an4475-g2.dts"
+            if [ -f "$DTS" ]; then
+              python3 "$GITHUB_WORKSPACE/scripts/check-dts-refs.py" "$DTS" || {
+                echo "::error::修 $DTS 里报出来的 &label 拼写，别等 65 分钟后的 dtc"
+                exit 1
+              }
+            else
+              echo "::warning::没找到 $DTS，跳过 DTS phandle 检查"
+            fi
           fi
 
           # 代理插件校验（只警告）：kconfig 只认 CONFIG_PACKAGE_x=y，
