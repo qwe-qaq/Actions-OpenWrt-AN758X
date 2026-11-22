@@ -99,6 +99,10 @@ COUNTRY='$WIFI_5G_COUNTRY'
 CHANNEL='$WIFI_5G_CHANNEL'
 HTMODE='$WIFI_5G_HTMODE'
 FALLBACK='$WIFI_5G_FALLBACK'
+# vendor（mtwifi）后端生成的就是 WiFi7 的 EHT160；用 HE160 覆盖等于把 5G
+# 降成 WiFi6，所以对 type=mtwifi 的设备改用 EHT。
+HTMODE_EHT='EHT160'
+FALLBACK_EHT='EHT80'
 
 log() { logger -t wifi-5g "\$@"; }
 
@@ -130,10 +134,16 @@ for dev in \$(uci -q show wireless | sed -n 's/^wireless\.\([A-Za-z0-9_-]*\)=wif
 
 	# 频宽：确认不支持 160MHz 才回落
 	# 取不到 phy 名时不检测（保持 HTMODE）—— 避免无 phy 选项的 radio 被误判回落
+	vtype="\$(uci -q get wireless.\$dev.type 2>/dev/null)"
 	ht="\$HTMODE"
+	fallback="\$FALLBACK"
+	if [ "\$vtype" = "mtwifi" ]; then
+		ht="\$HTMODE_EHT"
+		fallback="\$FALLBACK_EHT"
+	fi
 	phy="\$(uci -q get wireless.\$dev.phy 2>/dev/null)"
 	if [ -n "\$phy" ] && ! support_160 "\$phy"; then
-		ht="\$FALLBACK"
+		ht="\$fallback"
 		log "\$dev：未检测到 160MHz 能力，回落为 \$ht"
 	fi
 

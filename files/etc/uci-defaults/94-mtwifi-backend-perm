@@ -1,0 +1,31 @@
+#!/bin/sh
+# mtwifi-cfg-ucode 把两个 ucode 后端都装成 0644，但这两处都是「直接执行」：
+#
+#   * /sbin/wifi 的 detect_mtwifi() 是 `/lib/wifi/mtwifi.uc`（注意不是
+#     `ucode /lib/wifi/mtwifi.uc`），没有 +x 就 EACCES：
+#         /sbin/wifi: eval: line 8: /lib/wifi/mtwifi.uc: Permission denied
+#         mtwifi: Detect failed
+#     于是 /sbin/wifi 回落到 mac80211.uc，生成的 /etc/config/wireless 全是
+#     `option type 'mac80211'`，vendor 驱动（netifd 里没有 mac80211 那条路）
+#     根本不认，两个 radio 永远起不来。
+#
+#   * netifd 按 `option type` 直接 exec /lib/netifd/wireless/<type>.sh，
+#     mtwifi.sh 没有 +x 的话 BSS 也起不来。
+#
+# 顺带把回落生成的 mac80211 配置删掉，让下面重新按 mtwifi 生成。
+
+for f in /lib/wifi/mtwifi.uc /lib/netifd/wireless/mtwifi.sh; do
+	[ -f "$f" ] && chmod 0755 "$f"
+done
+
+if [ -f /etc/config/wireless ] && grep -q "type 'mac80211'" /etc/config/wireless; then
+	logger -t mtwifi "丢弃 mac80211 回落配置，按 mtwifi 重新生成 wireless"
+	rm -f /etc/config/wireless
+fi
+
+if [ ! -f /etc/config/wireless ]; then
+	# 此时 kmodloader 已经跑过，mt7993/mt_wifi 的 phy 在 /sys 里可见
+	wifi config >/dev/null 2>&1
+fi
+
+exit 0
