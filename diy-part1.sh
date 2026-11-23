@@ -41,18 +41,20 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-igmpproxy    IGMP Proxy 组播代理 Web 界面
                         #   └─ luci-app-ledpanel    面板 LED 控制（系统 → 面板 LED）
                         #      ★仅 an4475-g2 的 config =y：灯位是这块板的 PCA9555 脚位
-# 以下开关可被环境变量覆盖（: ${VAR:=默认}）；选「不拉私有仓库」时注入 ADD_FTTR=false
-: "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
-: "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
-: "${ADD_FTTR_TOOLS:=true}" # openwrt-fttr：fttrd 控制器 + fttrctl（Rust 包）
-: "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit
-: "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面包（公开 CI 生成的 package 分支）
-                            # （前三个来自 openwrt-fttr 私有仓库；界面包单独拉，见下方）
+# 以下开关可被环境变量覆盖（: ${VAR:=默认}）；选「不拉仓库」时 workflow 注入 ADD_FTTR=false
+: "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★H3C / AN4475 两平台共用
+: "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）★仅 HM2004-DU
+: "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit ★仅 HM2004-DU
+: "${ADD_FSL:=true}"        # fiberhome-fsl：AN4475 下行 PON 的 FSL 内核驱动（kmod-fiberhome-fsl）★仅 AN4475-G2
+: "${ADD_FTTR_TOOLS:=true}" # openwrt-fttr：fttrd 控制器 + fttrctl（Rust 包）★两平台共用
+: "${ADD_FTTR_LUCI:=true}"  # luci-app-fttr：界面包（公开 CI 生成的 package 分支）★两平台共用
 
-# FTTR 四件套只对 HM2004-DU 有意义（DEPENDS 带 @(TARGET_airoha_an7581)）。
-# workflow 把 PROFILE 导出为环境变量，非 2004 机型直接跳过，不白花 clone 时间。
-# ⚠ 不能默认成 h3c_hm2004-du：warm-cache.yml 也调本脚本却不设 PROFILE、也没有
-#   私有仓库凭证，默认成 h3c 会去 clone 私有 feed 然后 "could not read Username"。
+# FTTR 后端按 PROFILE 二选一，共用同一个 openwrt-fttr feed：
+#   h3c_hm2004-du       → H3C FPGA Micro-OLT（FMCS 驱动 + 比特流）
+#   fiberhome_an4475-g2 → AN7581 SoC 内置下行 PON（FSL 独占 SPI 驱动，无 FPGA 固件）
+# workflow 把 PROFILE 导出为环境变量，其余机型直接跳过，不白花 clone 时间。
+# ⚠ 不能默认成某个机型：warm-cache.yml 也调本脚本却不设 PROFILE、也没有
+#   仓库凭证，默认拉任一平台都会白花 clone 时间甚至认证失败。
 FTTR_PROFILE="${PROFILE:-none}"
 
 clone() {  # clone <url> <dir> [branch]
@@ -95,35 +97,50 @@ if [ "$ADD_LUCI_APP" = "true" ]; then
 fi
 
 # =========================================================
-# FTTR 后端三件套 ★HM2004-DU 专属，源 qwe-qaq/openwrt-fttr（私有）
+# FTTR 后端 —— 按 PROFILE 二选一，源 LazuliKao/openwrt-fttr（公开仓库）
+#
+#   h3c_hm2004-du       : h3c-fmcs + h3c-fmcs-firmware + openwrt-fttr
+#   fiberhome_an4475-g2 : fiberhome-fsl + openwrt-fttr
+#
 # ⚠ 必须用裸 URL：凭证由 workflow 的 GIT_ASKPASS 注入，拼 token 会被 clone 打进日志。
-# ⚠ 该仓库是 feed 形态（根目录即包目录）。用户态 Rust 包已改名 openwrt-fttr，
-#   但源目录可能是 fttr / fttr-tools / h3c-fttr-tools，故按候选名探测后统一拷成
-#   package/custom/openwrt-fttr/，保证索引包名与 config 的 =y 对得上。
-# ⚠ h3c-fmcs 是 KernelPackage，索引里叫 kmod-h3c-fmcs（校验里由 pkgname_of 映射）。
+# ⚠ 该仓库是 feed 形态（根目录下每个子目录就是一个包）。用户态 Rust 包目录为
+#   fttr/，拷进 package/custom 时统一改名 openwrt-fttr，保证索引包名与 config 的 =y
+#   对得上；历史上游可能叫 fttr-tools / h3c-fttr-tools，故按候选名探测。
+# ⚠ h3c-fmcs / fiberhome-fsl 是 KernelPackage，索引里分别是
+#   kmod-h3c-fmcs / kmod-fiberhome-fsl（校验里由 pkgname_of 映射）。
 # =========================================================
-if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
-  # 仓库与分支由 workflow 注入，本地手工跑时回退到下面的默认值
-  FTTR_FEED_URL="https://github.com/${PRIVATE_REPO:-LazuliKao/openwrt-fttr}"
-  FTTR_FEED_BRANCH="${PRIVATE_REPO_BRANCH:-main}"
+if [ "$ADD_FTTR" = "true" ] && { [ "$FTTR_PROFILE" = "h3c_hm2004-du" ] || [ "$FTTR_PROFILE" = "fiberhome_an4475-g2" ]; }; then
+  case "$FTTR_PROFILE" in
+    h3c_hm2004-du)
+      # 仓库与分支由 workflow 注入（可指向私有镜像），本地手工跑时回退到公开仓库
+      FTTR_FEED_URL="https://github.com/${PRIVATE_REPO:-LazuliKao/openwrt-fttr}"
+      FTTR_FEED_BRANCH="${PRIVATE_REPO_BRANCH:-main}"
+      ;;
+    fiberhome_an4475-g2)
+      # AN4475 不涉及私有镜像/凭证：固定走公开仓库，避免 workflow 的
+      # PRIVATE_REPO（dispatch 触发时回退为 qwe-qaq/openwrt-fttr）把机型带偏。
+      FTTR_FEED_URL="https://github.com/${FTTR_PUBLIC_REPO:-LazuliKao/openwrt-fttr}"
+      FTTR_FEED_BRANCH="${FTTR_PUBLIC_REPO_BRANCH:-main}"
+      ;;
+  esac
   FTTR_FEED_TMP="$(mktemp -d)/openwrt-fttr"
   if ! clone "$FTTR_FEED_URL" "$FTTR_FEED_TMP" "$FTTR_FEED_BRANCH"; then
-    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / openwrt-fttr / h3c-fmcs-firmware 会被 defconfig 剔除；luci-app-fttr 因依赖 +openwrt-fttr 也会被连带剔除"
-    echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
+    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})"
+    echo "        ${FTTR_PROFILE} 的 FTTR 包会被 defconfig 剔除；luci-app-fttr 因依赖 +openwrt-fttr 也会被连带剔除"
+    if [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
+      echo "        私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
+    fi
     exit 1
   fi
 
   # openwrt-fttr 硬 include 了 feeds/packages/lang/rust/rust-package.mk，
-  # 这个文件不在的话 dump 直接失败、包静默不进索引。
-  # 与其等到 defconfig 把它剔掉才发现，不如在这里就报错退出。
+  # 这个文件不在的话 dump 直接失败、包静默不进索引。两个平台都要校验。
   if [ "$ADD_FTTR_TOOLS" = "true" ] && [ ! -f feeds/packages/lang/rust/rust-package.mk ]; then
     echo "::error::未找到 feeds/packages/lang/rust/rust-package.mk，openwrt-fttr 无法索引"
     echo "        确认 packages feed 已 update + install；或把 ADD_FTTR_TOOLS 置为 false"
     exit 1
   fi
 
-  # 用户态后端改名后源目录不稳定（fttr / fttr-tools / h3c-fttr-tools），
-  # 逐个探测；拷进 package/custom 时统一用包名 openwrt-fttr。
   FTTR_TOOLS_SRC=""
   for cand in fttr fttr-tools h3c-fttr-tools openwrt-fttr; do
     if [ -f "$FTTR_FEED_TMP/$cand/Makefile" ]; then
@@ -137,9 +154,20 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   fi
 
   FTTR_FEED_PKGS=""
-  [ "$ADD_FMCS" = "true" ]       && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs"
-  [ "$ADD_FTTR_TOOLS" = "true" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS $FTTR_TOOLS_SRC"
-  [ "$ADD_FMCS_FW" = "true" ]    && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs-firmware"
+  if [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
+    [ "$ADD_FMCS" = "true" ]       && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs"
+    [ "$ADD_FTTR_TOOLS" = "true" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS $FTTR_TOOLS_SRC"
+    [ "$ADD_FMCS_FW" = "true" ]    && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs-firmware"
+  else
+    # AN4475：下行 PON 由 SoC 内置 + fiberhome-fsl 驱动承担，不需要 H3C FPGA 比特流。
+    [ "$ADD_FSL" = "true" ]        && FTTR_FEED_PKGS="$FTTR_FEED_PKGS fiberhome-fsl"
+    [ "$ADD_FTTR_TOOLS" = "true" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS $FTTR_TOOLS_SRC"
+    # 下面两个只为让 fttr/Makefile 里 +FTTR_PLATFORM_H3C_HM2004_DU:kmod-h3c-fmcs
+    # 这类条件依赖在 package-metadata 里能解析到包。AN4475 的 config 不写它们 =y，
+    # 不会进固件；缺了则 defconfig 可能报「依赖不存在」把整条 FTTR 剔掉。
+    [ -d "$FTTR_FEED_TMP/h3c-fmcs" ]          && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs"
+    [ -d "$FTTR_FEED_TMP/h3c-fmcs-firmware" ] && FTTR_FEED_PKGS="$FTTR_FEED_PKGS h3c-fmcs-firmware"
+  fi
 
   for p in $FTTR_FEED_PKGS; do
     if [ ! -f "$FTTR_FEED_TMP/$p/Makefile" ]; then
@@ -159,15 +187,16 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
 fi
 
 # =========================================================
-# luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★HM2004-DU 专属
+# luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★H3C / AN4475 两平台共用
 # 源 LazuliKao/luci-app-fttr 的 package 分支（CI 产物，前端 JS 随包提交，
-# 编译期不联网、无 hash 失效问题）。后端仍由上面的私有 feed 提供。
+# 编译期不联网、无 hash 失效问题）。后端 openwrt-fttr 由上面的 feed 提供。
 # ⚠ 该分支 orphan + force-push（每次只 1 个 commit），必须 --depth 1 重拉。
-# ⚠ 上游 Makefile 漏了 "# call BuildPackage" 标记行。scan.mk 用文本 grep 找它
-#   决定哪些 Makefile 进 FILELIST（不展开 include），缺了就不 DUMP、不进
-#   tmp/.packageinfo，表现为「别的包全 ✅ 唯独它 ❌ 且无 dump.txt」。故下方幂等补。
+# ⚠ 上游 Makefile 漏过 "# call BuildPackage" 标记行（2026-11 版已自带）。
+#   scan.mk 用文本 grep 找它决定哪些 Makefile 进 FILELIST，缺了就不 DUMP、
+#   不进 tmp/.packageinfo。故下方保留幂等补，上游修好后自动跳过。
 # =========================================================
-if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
+if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && \
+   { [ "$FTTR_PROFILE" = "h3c_hm2004-du" ] || [ "$FTTR_PROFILE" = "fiberhome_an4475-g2" ]; }; then
   # 用独立变量名，不与 workflow 里指向「源码仓 main 分支」的 FTTR_LUCI_* 冲突
   FTTR_PKG_REPO="${FTTR_PKG_REPO:-LazuliKao/luci-app-fttr}"
   FTTR_PKG_BRANCH="${FTTR_PKG_BRANCH:-package}"
@@ -187,9 +216,6 @@ if [ "$ADD_FTTR" = "true" ] && [ "$ADD_FTTR_LUCI" = "true" ] && [ "$FTTR_PROFILE
   cp -a "$FTTR_TMP" "$PKG_DIR/luci-app-fttr"
   rm -rf "$PKG_DIR/luci-app-fttr/.git"   # 别把克隆元数据带进源码树
 
-  # scan.mk 只按文本 grep 'call BuildPackage' 收录 Makefile，luci.mk 里的真实
-  # 调用不算（grep 不展开 include）。上游 CI 模板漏了这行标准注释，补回来：
-  # 注释行对 make 无害，但缺了它整个包不会被索引。上游修好后自动跳过。
   FTTR_MK="$PKG_DIR/luci-app-fttr/Makefile"
   if ! grep -qE 'call[[:space:]]+(Build/DefaultTargets|BuildPackage|BuildContainer|BuildCompose|KernelPackage)' "$FTTR_MK"; then
     printf '\n# call BuildPackage - OpenWrt buildroot signature\n' >> "$FTTR_MK"
@@ -449,6 +475,7 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
       open-app-filter) echo "appfilter" ;;
       oaf)             echo "kmod-oaf" ;;
       h3c-fmcs)        echo "kmod-h3c-fmcs" ;;
+      fiberhome-fsl) echo "kmod-fiberhome-fsl" ;;
       *)               echo "$1" ;;
     esac
   }
@@ -527,23 +554,31 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   [ "$ADD_TASKPLAN"  = "true" ] && REQUIRED="$REQUIRED luci-app-taskplan"
   [ "$ADD_OAF"       = "true" ] && REQUIRED="$REQUIRED luci-app-oaf"
   true
-  if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
-    # KernelPackage 生成的包名带 kmod- 前缀，索引里写的是 kmod-h3c-fmcs
-    if [ "$ADD_FMCS" = "true" ]; then
-      REQUIRED="$REQUIRED kmod-h3c-fmcs"
-    fi
-    if [ "$ADD_FMCS_FW" = "true" ]; then
-      REQUIRED="$REQUIRED h3c-fmcs-firmware"
-    fi
+  if [ "$ADD_FTTR" = "true" ] && { [ "$FTTR_PROFILE" = "h3c_hm2004-du" ] || [ "$FTTR_PROFILE" = "fiberhome_an4475-g2" ]; }; then
+    # 两平台共用：luci-app-fttr → openwrt-fttr
     if [ "$ADD_FTTR_TOOLS" = "true" ]; then
       REQUIRED="$REQUIRED openwrt-fttr"
     fi
     if [ "$ADD_FTTR_LUCI" = "true" ]; then
       REQUIRED="$REQUIRED luci-app-fttr"
     fi
-    # luci-app-fttr → openwrt-fttr → kmod-h3c-fmcs，链条上任一节缺失，
-    # defconfig 都会静默剔掉整条 FTTR。前者多为缺 rust-package.mk，
-    # 后者受 @(TARGET_airoha_an7581) 限制。
+    case "$FTTR_PROFILE" in
+      h3c_hm2004-du)
+        if [ "$ADD_FMCS" = "true" ]; then
+          REQUIRED="$REQUIRED kmod-h3c-fmcs"
+        fi
+        if [ "$ADD_FMCS_FW" = "true" ]; then
+          REQUIRED="$REQUIRED h3c-fmcs-firmware"
+        fi
+        ;;
+      fiberhome_an4475-g2)
+        # KernelPackage 生成的包名带 kmod- 前缀
+        if [ "$ADD_FSL" = "true" ]; then
+          REQUIRED="$REQUIRED kmod-fiberhome-fsl"
+        fi
+        ;;
+    esac
+    # 依赖链上任一节缺失，defconfig 都会静默剔掉整条 FTTR。
     if [ "$ADD_FTTR_TOOLS" = "true" ] &&
        ! grep -qx "Package: openwrt-fttr" tmp/.packageinfo 2>/dev/null; then
       echo "::error::openwrt-fttr 不在包索引里（luci-app-fttr 的后端，Rust 包）"
@@ -552,11 +587,18 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
       echo "        不需要 FTTR 就把 diy-part1.sh 的 ADD_FTTR 改成 false。"
       exit 1
     fi
-    if [ "$ADD_FMCS" = "true" ] &&
+    if [ "$FTTR_PROFILE" = "h3c_hm2004-du" ] && [ "$ADD_FMCS" = "true" ] &&
        ! grep -qx "Package: kmod-h3c-fmcs" tmp/.packageinfo 2>/dev/null; then
       echo "::error::kmod-h3c-fmcs 不在包索引里（openwrt-fttr 依赖它）"
       echo "        DEPENDS 是 @(TARGET_airoha_an7581)：非该 target 时包不会进索引。"
       echo "        不需要 FTTR 就把 diy-part1.sh 的 ADD_FTTR 改成 false。"
+      exit 1
+    fi
+    if [ "$FTTR_PROFILE" = "fiberhome_an4475-g2" ] && [ "$ADD_FSL" = "true" ] &&
+       ! grep -qx "Package: kmod-fiberhome-fsl" tmp/.packageinfo 2>/dev/null; then
+      echo "::error::kmod-fiberhome-fsl 不在包索引里（AN4475 下行 PON 的 FSL 驱动）"
+      echo "        DEPENDS 是 @TARGET_airoha_an7581，且需要板级 fiberhome,an4475-fsl 节点。"
+      echo "        不需要下行 PON 控制面就把 ADD_FTTR 改成 false。"
       exit 1
     fi
   fi
